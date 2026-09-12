@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Firebase — the keys for somebody's project. The plist stays out of the repo
+# for the same reason the tower address does; app.config.js reads it at build time.
+GoogleService-Info.plist
+google-services.json
