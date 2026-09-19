@@ -108,3 +108,17 @@ export function formatRemaining(positionSeconds: number, durationSeconds: number
   const remaining = Math.max(0, durationSeconds - positionSeconds);
   return `−${formatClock(remaining)}`;
 }
+
+/**
+ * A billed name, and a face where the server found one.
+ *
+ * Nothing in the catalogue gives a cast member an identity beyond their name in
+ * a comma-separated string, so a photo is looked up by a slug of that name and
+ * genuinely may not resolve. `photoUrl` null is therefore the ordinary case
+ * rather than a failure, and the screen falls back to the initials it has always
+ * drawn — which is what the bubble was designed around in the first place.
+ */
+export interface CastMember {
+  name: string;
+  photoUrl: string | null;
+}

@@ -16,6 +16,15 @@ export interface Preferences {
   genres: string[];
   /** The ceiling asked for away from home. */
   mobileQuality: QualityCap;
+  /**
+   * When false, every mono spec, path, bitrate and codec string is hidden
+   * app-wide and the human-written copy is left intact.
+   *
+   * Owned by the profile rather than the device in the server's model, but read
+   * locally so the whole app does not wait on a request to know how to draw
+   * itself.
+   */
+  showTechnicalBadges: boolean;
   /** False until the questions have been answered or skipped. */
   completed: boolean;
 }
@@ -24,6 +33,7 @@ export const DefaultPreferences: Preferences = {
   language: null,
   genres: [],
   mobileQuality: 'MEDIUM',
+  showTechnicalBadges: true,
   completed: false,
 };
 
@@ -86,3 +96,11 @@ export const FallbackGenres: string[] = [
   'Animation',
   'Family',
 ];
+
+/** One language the library holds, by ISO 639-1 code and its English name.
+ *
+ * The name comes from the server rather than a table in here: it resolves the
+ * code once and every client draws the same chip, instead of each carrying its
+ * own copy of the ISO list and disagreeing at the edges.
+ */
+export interface Language { code: string; name: string }

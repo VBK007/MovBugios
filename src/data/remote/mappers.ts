@@ -1,3 +1,14 @@
+import { MusicHome } from '@/domain/model/musicHome';
+import { CastMember } from '@/domain/model/people';
+import { Answer, Lookup } from '@/domain/model/assistant';
+import { Teaser } from '@/domain/model/teaser';
+import {
+  Collection,
+  CollectionKind,
+  Recommendation,
+  SearchResults,
+} from '@/domain/model/collection';
+import { Language } from '@/domain/model/preferences';
 import {
   AudioTrack,
   Chapter,
@@ -44,6 +55,15 @@ import {
   PlayerStateDto,
   TrickplayDto,
   PartyDto,
+  CollectionDto,
+  LanguageDto,
+  RecommendationDto,
+  SearchResultDto,
+  AssistantAnswerDto,
+  TeaserClipDto,
+  ToolCallDto,
+  CastMemberDto,
+  MusicHomeDto,
 } from '@/data/remote/dto';
 
 // ---------------------------------------------------------------------------
@@ -148,6 +168,10 @@ export function summaryToTitle(dto: ItemSummaryDto, baseUrl?: string | null): Ti
     posterUrl: posterUrlFor(dto.id, dto.hasPoster ?? false, baseUrl),
     backdropUrl: backdropUrlFor(dto.id, dto.hasBackdrop ?? false, baseUrl),
     capturedAt: dto.capturedAt ?? null,
+    artist: dto.artist?.trim() ? dto.artist : null,
+    album: dto.album?.trim() ? dto.album : null,
+    trackNumber: dto.trackNumber ?? null,
+    language: dto.language?.trim() ? dto.language : null,
   });
 }
 
@@ -211,6 +235,10 @@ export function detailToTitle(
     posterUrl: posterUrlFor(dto.id, dto.hasPoster ?? false, baseUrl),
     backdropUrl: backdropUrlFor(dto.id, dto.hasBackdrop ?? false, baseUrl),
     capturedAt: dto.capturedAt ?? null,
+    artist: dto.artist?.trim() ? dto.artist : null,
+    album: dto.album?.trim() ? dto.album : null,
+    trackNumber: dto.trackNumber ?? null,
+    language: dto.language?.trim() ? dto.language : null,
     place: dto.place ?? null,
     people: dto.people ?? [],
     cast: toNameList(dto.castMembers),
@@ -492,5 +520,182 @@ export function partyToDomain(dto: PartyDto): WatchParty {
         }
       : null,
     capacityWarning: dto.capacityWarning ?? null,
+  };
+}
+
+/**
+ * The section it arrived in is the authority on its kind.
+ *
+ * The row carries a `kind` too, but the server has already sorted them into
+ * three lists — trusting the list it came in means a kind this build has never
+ * heard of still lands somewhere sensible rather than being dropped.
+ */
+export function collectionToDomain(dto: CollectionDto, kind: CollectionKind): Collection {
+  return {
+    id: dto.id,
+    kind,
+    // A collection with no name is not renderable; the id is a poor label but a
+    // real one, and hiding the row would hide titles that are genuinely there.
+    name: dto.name?.trim() ? dto.name : dto.id,
+    icon: dto.icon?.trim() ? dto.icon : null,
+    pinned: dto.pinned ?? false,
+    itemCount: dto.itemCount ?? 0,
+  };
+}
+
+export function recommendationToDomain(
+  dto: RecommendationDto,
+  baseUrl?: string | null,
+): Recommendation {
+  return {
+    title: summaryToTitle(dto.item, baseUrl),
+    reason: dto.reason?.trim() ? dto.reason : null,
+  };
+}
+
+export function searchResultToDomain(
+  dto: SearchResultDto,
+  baseUrl?: string | null,
+): SearchResults {
+  return {
+    titles: (dto.results?.items ?? [])
+      .map((i) => summaryToTitle(i, baseUrl))
+      /*
+       * Photographs are dropped, and the reason is that this app cannot open
+       * one. There is no photo tab, no photo grid and no viewer; a photo result
+       * is a row that does nothing when tapped.
+       *
+       * What made it visible was a server indexing every film's cover art as a
+       * photograph, so searching a title returned the film and then the film's
+       * own jacket under the same name. That is fixed where it belongs, in the
+       * scanner, but this stays: an app should not list things it has no screen
+       * for, whatever the server has decided to keep.
+       *
+       * If Tower ever grows a photo library, this line is what has to go.
+       */
+      .filter((title) => title.kind !== 'PHOTO'),
+    terms: (dto.terms ?? []).flatMap((term) => {
+      // A term with no label cannot be drawn as a chip, and a chip reading
+      // "null" is worse than one fewer chip.
+      const label = term.label?.trim();
+      if (!label) return [];
+      return [
+        {
+          field: term.field ?? '',
+          label,
+          matched: term.matched?.trim() ? term.matched : null,
+        },
+      ];
+    }),
+    understoodNothing: dto.understoodNothing ?? false,
+    readByModel: dto.interpretedBy?.toLowerCase() === 'model',
+  };
+}
+
+/**
+ * Drops a row the library cannot name at all.
+ *
+ * The name falls back to the code so an unnamed language is still selectable —
+ * "ta" is a poor label but a real answer, where dropping the row silently loses
+ * a language the house speaks.
+ */
+export function languagesToDomain(dtos: LanguageDto[]): Language[] {
+  return dtos.flatMap((dto) => {
+    const code = dto.code?.trim();
+    if (!code) return [];
+    return [{ code, name: dto.name?.trim() ? dto.name : code }];
+  });
+}
+
+/**
+ * Tool arguments are flattened to strings here, at the edge.
+ *
+ * They arrive as whatever the model chose — a number, a string, a boolean — and
+ * the only thing the app does with them is print them next to the tool name.
+ * Doing it here means no screen has to handle a JSON type to show a caption.
+ */
+export function toolCallToDomain(dto: ToolCallDto): Lookup {
+  const args: Record<string, string> = {};
+  for (const [key, value] of Object.entries(dto.arguments ?? {})) {
+    args[key] = typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  return {
+    tool: dto.tool?.trim() ? dto.tool : 'lookup',
+    arguments: args,
+    failed: dto.failed ?? false,
+  };
+}
+
+export function answerToDomain(dto: AssistantAnswerDto): Answer {
+  return {
+    // Always something to read: the server promises prose even when it is off,
+    // but a blank string would leave the screen with nothing at all.
+    text: dto.answer?.trim() ? dto.answer : 'The assistant had nothing to say about that.',
+    lookups: (dto.toolCalls ?? []).map(toolCallToDomain),
+    answered: dto.answered ?? false,
+  };
+}
+
+/**
+ * Null for anything that is not a finished, playable clip.
+ *
+ * A queued, generating or failed teaser has no file behind it, and this app has
+ * no admin screen to show a job on — so rather than carry a state nothing can
+ * render, the row is dropped and the caller filters. `fileUrl` is the server's
+ * own readiness test: it sets it only once the bytes exist.
+ */
+export function teaserToDomain(dto: TeaserClipDto, baseUrl?: string | null): Teaser | null {
+  const path = dto.fileUrl?.trim();
+  if (!path) return null;
+  const item = dto.mediaItemId?.trim();
+  if (!item) return null;
+  if (!baseUrl?.trim()) return null;
+  return {
+    id: dto.id,
+    titleId: item,
+    // The film's name is what the feed is selling; a clip that cannot name it is
+    // a video with no way back to the thing it is advertising.
+    titleName: dto.itemTitle?.trim() ? dto.itemTitle : 'Untitled',
+    url: baseUrl + path,
+    headers: {},
+    durationSeconds: dto.durationSeconds ?? 0,
+    label: dto.label?.trim() ? dto.label : null,
+    startSeconds: dto.startSeconds ?? 0,
+  };
+}
+
+/**
+ * Dropped when the name is blank — a face with nothing to call it is not a
+ * person the rail can draw.
+ */
+export function castMemberToDomain(
+  dto: CastMemberDto,
+  baseUrl?: string | null,
+): CastMember | null {
+  const person = dto.name?.trim();
+  if (!person) return null;
+  const path = dto.photoUrl?.trim();
+  return {
+    name: person,
+    photoUrl: path && baseUrl?.trim() ? baseUrl + path : null,
+  };
+}
+
+/**
+ * Rails with nothing in them are dropped, not drawn.
+ *
+ * The server already omits empty ones, so this is belt and braces — but a
+ * heading over an empty row is the one failure mode a browse screen cannot
+ * afford, because it reads as the library being broken rather than quiet.
+ */
+export function musicHomeToDomain(dto: MusicHomeDto, baseUrl?: string | null): MusicHome {
+  return {
+    continueListening: (dto.continueListening ?? []).map((i) => summaryToTitle(i, baseUrl)),
+    rails: (dto.rails ?? []).flatMap((rail) => {
+      const title = rail.title?.trim();
+      const tracks = (rail.items ?? []).map((i) => summaryToTitle(i.item, baseUrl));
+      if (!title || tracks.length === 0) return [];
+      return [{ key: rail.key ?? '', title, tracks }];
+    }),
   };
 }

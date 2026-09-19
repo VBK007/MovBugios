@@ -19,6 +19,20 @@ export function useRepository(): TowerRepository {
   return useFlow(repositoryFlow);
 }
 
+/**
+ * The profile every request is being made on behalf of.
+ *
+ * Worth having as its own hook because it belongs in the dependency list of
+ * anything that loads data: the server keys resume positions, likes and comments
+ * to `X-Profile-Id`, so switching person changes what nearly every endpoint
+ * returns. A screen that does not re-read on this is showing the last person's
+ * library.
+ */
+export function useActiveProfileId(): string | null {
+  const repository = useRepository();
+  return useFlow(repository.activeProfile)?.id ?? null;
+}
+
 /** True while the app is on the sample library — which also means signed out. */
 export function useIsGuest(): boolean {
   return useFlow(usingSampleDataFlow);

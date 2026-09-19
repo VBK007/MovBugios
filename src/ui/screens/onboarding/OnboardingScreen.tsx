@@ -19,6 +19,7 @@ import { RemoteTowerRepository } from '@/data/remote/remoteTowerRepository';
 import {
   DefaultPreferences,
   FallbackGenres,
+  Language,
   OfferedLanguages,
   Preferences,
   QualityCap,
@@ -64,6 +65,15 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
    * one question they will answer honestly.
    */
   const [genres, setGenres] = useState<string[]>(FallbackGenres);
+  /**
+   * The languages the library actually carries, where it can say.
+   *
+   * Same treatment as the genres above: asking someone to pick Malayalam from a
+   * house that holds no Malayalam wastes the one question they will answer
+   * honestly. `OfferedLanguages` is what a first run shows anyway, so the
+   * server only ever narrows this.
+   */
+  const [languages, setLanguages] = useState<Language[]>(OfferedLanguages);
   const [saving, setSaving] = useState(false);
   /**
    * The same wall the splash opens on, so the questions feel like part of the
@@ -85,6 +95,19 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
       if (alive.current) setArt(stored);
     })();
   }, []);
+
+  useEffect(() => {
+    void (async () => {
+      // Best effort, like the genres below. An unprobed or unreachable library
+      // answers with nothing, and the standing list is already on screen.
+      try {
+        const offered = await repository.libraryLanguages();
+        if (alive.current && offered.length > 0) setLanguages(offered);
+      } catch {
+        // The standing list is already on screen.
+      }
+    })();
+  }, [repository]);
 
   useEffect(() => {
     void (async () => {
@@ -171,7 +194,7 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
           {step === 'LANGUAGE' && (
             <View style={styles.chips}>
-              {OfferedLanguages.map((language) => (
+              {languages.map((language) => (
                 <Chip
                   key={language.code}
                   label={language.name}

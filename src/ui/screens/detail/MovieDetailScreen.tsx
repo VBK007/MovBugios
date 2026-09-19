@@ -1,9 +1,22 @@
+import { useVideoPlayer } from 'expo-video';
+import { useEventListener } from 'expo';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { HeroScrim, Ink, OnInk, OnInkMuted, Space, TowerType } from '@/theme';
+import {
+  Amber,
+  HeroScrim,
+  Ink,
+  OnInk,
+  OnInkFaint,
+  OnInkMuted,
+  Radius,
+  Space,
+  Surface1,
+  TowerType,
+} from '@/theme';
 import { DefaultLibraryFilters } from '@/domain/model/library';
 import {
   Title,
@@ -15,7 +28,7 @@ import {
 import { formatClock } from '@/domain/model/people';
 import { Loading, UiState, dataOrNull, loadState } from '@/ui/uiState';
 import { gradientFor, withAlpha } from '@/ui/color';
-import { useRepository } from '@/ui/hooks';
+import { useActiveProfileId, useRepository } from '@/ui/hooks';
 import { useComments } from '@/ui/comments/useComments';
 import { CommentsSheet } from '@/ui/comments/CommentsSheet';
 import { RemoteTowerRepository } from '@/data/remote/remoteTowerRepository';
@@ -25,16 +38,23 @@ import {
   CastGlyph,
   ChevronGlyph,
   DownloadGlyph,
+  PauseGlyph,
+  PlayGlyph,
   TogetherGlyph,
 } from '@/ui/components/Glyphs';
 import {
   AmberButton,
   DataLabel,
+  DataMeta,
   DataValue,
   OutlineIconButton,
   WordChip,
 } from '@/ui/components/Primitives';
 import { EngagementRow } from '@/ui/components/Engagement';
+import { Teaser } from '@/domain/model/teaser';
+import { PlaybackSource } from '@/domain/model/player';
+import { MusicPlayback } from '@/player/musicPlayback';
+import { MiniPlayer } from '@/ui/components/MiniPlayer';
 import { PlaybackPlanCard } from '@/ui/components/PlaybackPlanCard';
 import { PosterCard } from '@/ui/components/PosterCard';
 import { Skeleton } from '@/ui/components/Rails';
@@ -52,14 +72,37 @@ export function MovieDetailScreen({
   titleId,
   onBack,
   onOpenTitle,
+  onOpenTeasers,
+  onOpenPlayer,
 }: {
   titleId: string;
   onBack: () => void;
   onOpenTitle: (titleId: string) => void;
+  onOpenTeasers: () => void;
+  /** Expanding the bar, which this screen carries when a song is playing. */
+  onOpenPlayer: (titleId: string) => void;
 }) {
   const repository = useRepository();
+  const profileId = useActiveProfileId();
   const [title, setTitle] = useState<UiState<Title>>(Loading);
   const [alsoOnDisk, setAlsoOnDisk] = useState<Title[]>([]);
+  /**
+   * Published clips cut from this film, or empty — which is the usual case.
+   *
+   * Only the count and the first one's length are used here; the row opens the
+   * feed, which is where they are actually watched.
+   */
+  const [teasers, setTeasers] = useState<Teaser[]>([]);
+  /**
+   * Name to photo URL, for the cast members the server could resolve.
+   *
+   * Arrives after the title and is often partial or empty — the rail draws
+   * initials for anyone missing, which is what it did before there were photos
+   * at all.
+   */
+  const [castPhotos, setCastPhotos] = useState<Record<string, string>>({});
+  /** Where a twenty-second taster of a track lives. Null for anything else. */
+  const [preview, setPreview] = useState<PlaybackSource | null>(null);
 
   const alive = useRef(true);
   useEffect(() => {
@@ -155,11 +198,31 @@ export function MovieDetailScreen({
     try {
       const others = await repository.browse({ ...DefaultLibraryFilters, category: data.kind });
       if (alive.current) setAlsoOnDisk(others.filter((o) => o.id !== data.id));
+      // After the title, not alongside it: the row this fills is far down the
+      // screen and almost always empty, and it should not be able to hold up the
+      // poster.
+      const clips = await repository.teasers(data.id);
+      if (alive.current) setTeasers(clips);
+
+      if (data.kind === 'MUSIC') {
+        const taster = await repository.trackPreview(data.id);
+        if (alive.current) setPreview(taster);
+      }
+
+      // Last of the three, and the least urgent: the names are already on screen
+      // from the detail payload, and these only put faces to them.
+      const members = await repository.cast(data.id);
+      const faces: Record<string, string> = {};
+      for (const member of members) {
+        if (member.photoUrl != null) faces[member.name] = member.photoUrl;
+      }
+      if (alive.current && Object.keys(faces).length > 0) setCastPhotos(faces);
     } catch {
       // "Also on the disk" is a rail, not the screen. Losing it is not an error
       // worth replacing the title with.
     }
-  }, [repository, titleId]);
+    // Resume position, the like and the comment count are all per-person.
+  }, [repository, titleId, profileId]);
 
   useEffect(() => {
     void load();
@@ -185,14 +248,27 @@ export function MovieDetailScreen({
         <DetailContent
           title={title.data}
           alsoOnDisk={alsoOnDisk}
+          teasers={teasers}
+          castPhotos={castPhotos}
+          preview={preview}
           onDownload={() => void repository.download(title.data.id)}
           onOpenTitle={onOpenTitle}
           onToggleLike={() => void toggleLike()}
           onOpenComments={comments.open}
           onPlay={() => gate.play(title.data.id, title.data.name)}
           onWatchTogether={() => gate.host(title.data.id, title.data.name)}
+          onOpenTeasers={onOpenTeasers}
         />
       )}
+
+      {/*
+       * The bar belongs here too, not only under the tabs: collapsing the full
+       * player usually lands on a detail screen, and a song that vanished from
+       * view the moment it did would look like it had stopped.
+       */}
+      <View style={styles.miniPlayer}>
+        <MiniPlayer onExpand={onOpenPlayer} withNavigationPadding />
+      </View>
 
       {gate.sheet}
 
@@ -214,21 +290,29 @@ export function MovieDetailScreen({
 function DetailContent({
   title,
   alsoOnDisk,
+  teasers,
+  castPhotos,
+  preview,
   onDownload,
   onOpenTitle,
   onToggleLike,
   onOpenComments,
   onPlay,
   onWatchTogether,
+  onOpenTeasers,
 }: {
   title: Title;
   alsoOnDisk: Title[];
+  teasers: Teaser[];
+  castPhotos: Record<string, string>;
+  preview: PlaybackSource | null;
   onDownload: () => void;
   onOpenTitle: (titleId: string) => void;
   onToggleLike: () => void;
   onOpenComments: () => void;
   onPlay: () => void;
   onWatchTogether: () => void;
+  onOpenTeasers: () => void;
 }) {
   return (
     <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
@@ -255,6 +339,21 @@ function DetailContent({
         onOpenComments={onOpenComments}
         style={{ paddingHorizontal: Space.Screen, paddingBottom: 18 }}
       />
+
+      {/* A track gets a taster where a film gets a teaser: same place, same
+          shape, same promise — twenty seconds before committing to the whole
+          thing. Absent for anything that is not music. */}
+      {preview != null && <PreviewRow source={preview} />}
+
+      {/* Absent unless somebody cut one. A film with no teaser should not be
+          advertising that it has none. */}
+      {teasers.length > 0 && (
+        <TeaserRow
+          count={teasers.length}
+          seconds={teasers[0].durationSeconds}
+          onOpen={onOpenTeasers}
+        />
+      )}
 
       {/* The heart of the screen: what happens when you press play. */}
       <PlaybackPlanCard
@@ -293,7 +392,12 @@ function DetailContent({
        * as a grey comma-separated line nobody read.
        */}
       {(title.cast.length > 0 || title.directors.length > 0) && (
-        <CastRail cast={title.cast} directors={title.directors} style={{ marginTop: 26 }} />
+        <CastRail
+          cast={title.cast}
+          directors={title.directors}
+          photos={castPhotos}
+          style={{ marginTop: 26 }}
+        />
       )}
 
       {title.studio != null && title.studio.trim() !== '' && (
@@ -473,7 +577,112 @@ function DetailMessage({ heading, body }: { heading: string; body: string }) {
   );
 }
 
+/**
+ * Twenty seconds of a track, played where it stands.
+ *
+ * Its own small player rather than the music session, and that is the point: a
+ * preview is a question about whether to play something, not the playing of it.
+ * Handing it to `MusicPlayback` would evict whatever was on, put a
+ * twenty-second clip on the lock screen, and hit the end of the queue when it
+ * finished.
+ *
+ * Pauses the music while it runs, for the same reason a film does — one app, two
+ * sounds, nothing arbitrating between them.
+ */
+function PreviewRow({ source }: { source: PlaybackSource }) {
+  const [playing, setPlaying] = useState(false);
+
+  const player = useVideoPlayer(
+    // Null until asked for, so opening a track costs no fetch and starts no
+    // encode on the server — the clip is generated on first request.
+    playing ? { uri: source.url, headers: source.headers } : null,
+    (instance) => {
+      instance.loop = false;
+    },
+  );
+
+  useEffect(() => {
+    if (!playing) {
+      player.pause();
+      return;
+    }
+    MusicPlayback.pause();
+    player.play();
+  }, [playing, player]);
+
+  // Twenty seconds, then back to a button that offers them again.
+  useEventListener(player, 'playToEnd', () => setPlaying(false));
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={playing ? 'Stop the preview' : 'Play a preview'}
+      onPress={() => setPlaying((current) => !current)}
+      style={({ pressed }) => [styles.teaserRow, { opacity: pressed ? 0.7 : 1 }]}
+    >
+      {playing ? (
+        <PauseGlyph color={Amber} size={13} />
+      ) : (
+        <PlayGlyph color={Amber} size={13} />
+      )}
+      <Text style={[TowerType.titleRow, { color: OnInk, flex: 1 }]}>
+        {playing ? 'Playing a preview' : 'Play a preview'}
+      </Text>
+      <DataMeta text="20S" color={OnInkFaint} />
+    </Pressable>
+  );
+}
+
+/**
+ * A way into this film's own clips.
+ *
+ * Says how long the first one runs, because that is the entire question being
+ * asked of somebody who has not decided to watch the film yet: a teaser is
+ * fifteen seconds, and knowing that is what makes it cheap to try.
+ */
+function TeaserRow({
+  count,
+  seconds,
+  onOpen,
+}: {
+  count: number;
+  seconds: number;
+  onOpen: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Watch the teaser"
+      onPress={onOpen}
+      style={({ pressed }) => [styles.teaserRow, { opacity: pressed ? 0.7 : 1 }]}
+    >
+      <PlayGlyph color={Amber} size={13} />
+      <Text style={[TowerType.titleRow, { color: OnInk, flex: 1 }]}>
+        {count === 1 ? 'Watch the teaser' : `Watch ${count} teasers`}
+      </Text>
+      <DataMeta text={`${Math.round(seconds)}S`} color={OnInkFaint} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  miniPlayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  teaserRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: Space.Screen,
+    marginBottom: 18,
+    borderRadius: Radius.Default,
+    backgroundColor: Surface1,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
   hero: {
     width: '100%',
     height: 330,

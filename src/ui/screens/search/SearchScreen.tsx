@@ -18,6 +18,7 @@ import {
   OnInkMuted,
   Radius,
   Space,
+  Surface1,
   Surface2,
   TowerType,
 } from '@/theme';
@@ -25,7 +26,15 @@ import { JumpTarget } from '@/domain/model/library';
 import { Title, resolution } from '@/domain/model/media';
 import { UiState, dataOrNull, loadState } from '@/ui/uiState';
 import { useRepository } from '@/ui/hooks';
-import { SearchGlyph } from '@/ui/components/Glyphs';
+import { UiStateError } from '@/ui/components/ServerError';
+import { ChevronGlyph, SearchGlyph } from '@/ui/components/Glyphs';
+import { RemovableChip } from '@/ui/components/Chips';
+import {
+  EmptySearchResults,
+  SearchResults,
+  SearchTerm,
+  removedFrom,
+} from '@/domain/model/collection';
 import { DataLabel, DataMeta, HairlineDivider } from '@/ui/components/Primitives';
 import { PosterThumb } from '@/ui/components/PosterCard';
 import { Skeleton } from '@/ui/components/Rails';
@@ -36,12 +45,44 @@ import { Skeleton } from '@/ui/components/Rails';
  *
  * Ported from ui/screens/search/SearchScreen.kt.
  */
-export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) => void }) {
+export function SearchScreen({
+  onOpenTitle,
+  onOpenAssistant,
+  onBack,
+}: {
+  onOpenTitle: (titleId: string) => void;
+  onOpenAssistant: () => void;
+  /**
+   * Search is reached from Home rather than from a tab, so it needs a way out.
+   * Null where it is shown as a tab, since a back arrow there would be a control
+   * that goes nowhere.
+   */
+  onBack?: (() => void) | null;
+}) {
   const repository = useRepository();
+  /**
+   * Whether this server has an assistant at all.
+   *
+   * False until it answers — a button that appears late is better than one that
+   * appears and then admits it does nothing.
+   */
+  const [canAsk, setCanAsk] = useState(false);
 
   const [query, setQuery] = useState('');
   /** Null means "nothing typed yet", which is a different screen from "no hits". */
   const [results, setResults] = useState<UiState<Title[]> | null>(null);
+  /**
+   * What the server read out of the phrase.
+   *
+   * Kept beside `results` rather than inside them on purpose: the reading is
+   * most worth showing when nothing came back, and an empty `UiState` carries
+   * no data to hang it off.
+   */
+  const [terms, setTerms] = useState<SearchTerm[]>([]);
+  /** No rule matched — the phrase was searched as a title and nothing more. */
+  const [understoodNothing, setUnderstoodNothing] = useState(false);
+  /** A model wrote the query instead, so there is no reading to attribute to words. */
+  const [readByModel, setReadByModel] = useState(false);
   const [jumpTargets, setJumpTargets] = useState<JumpTarget[]>([]);
 
   const alive = useRef(true);
@@ -54,6 +95,13 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
     };
   }, []);
 
+  useEffect(() => {
+    void (async () => {
+      const available = await repository.assistantAvailable();
+      if (alive.current) setCanAsk(available);
+    })();
+  }, [repository]);
+
   const onQueryChange = useCallback(
     (next: string) => {
       setQuery(next);
@@ -61,6 +109,9 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
 
       if (next.trim() === '') {
         setResults(null);
+        setTerms([]);
+        setUnderstoodNothing(false);
+        setReadByModel(false);
         setJumpTargets([]);
         return;
       }
@@ -72,18 +123,44 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
         if (!alive.current || run !== sequence.current) return;
         setResults({ type: 'LOADING' });
 
-        const loaded = await loadState(() => repository.search(next), {
-          emptyWhen: (list) => list.length === 0,
-          emptyMessage: `Nothing on the disk matches "${next}".`,
-        });
+        let found: SearchResults = EmptySearchResults;
+        const loaded = await loadState(
+          async () => {
+            found = await repository.search(next);
+            return found.titles;
+          },
+          {
+            emptyWhen: (list) => list.length === 0,
+            emptyMessage: `Nothing on the disk matches "${next}".`,
+          },
+        );
         const targets = await repository.jumpTargets(next);
 
         if (!alive.current || run !== sequence.current) return;
         setResults(loaded);
+        setTerms(found.terms);
+        setUnderstoodNothing(found.understoodNothing);
+        setReadByModel(found.readByModel);
         setJumpTargets(targets);
       }, 180);
     },
     [repository],
+  );
+
+  /**
+   * Drops a chip by deleting the words it was read from, then searching again.
+   *
+   * The query text stays the source of truth — there is no second, structured
+   * copy of the search for the box and the chips to disagree about. A term the
+   * server did not say where it came from cannot be removed this way, so its
+   * chip is drawn as a statement rather than something to press.
+   */
+  const removeTerm = useCallback(
+    (term: SearchTerm) => {
+      const remaining = removedFrom(term, query);
+      if (remaining !== query) onQueryChange(remaining);
+    },
+    [query, onQueryChange],
   );
 
   /** `6 RESULTS ON THE DISK` — the count line above the results. */
@@ -96,7 +173,19 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
   return (
     <View style={{ flex: 1, backgroundColor: Ink }}>
       <View style={{ paddingHorizontal: Space.Screen, paddingVertical: 18 }}>
-        <Text style={[TowerType.titleScreen, { color: OnInk }]}>Search</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {onBack != null && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              onPress={onBack}
+              style={styles.searchBack}
+            >
+              <ChevronGlyph rotation={180} color={OnInk} size={18} />
+            </Pressable>
+          )}
+          <Text style={[TowerType.titleScreen, { color: OnInk }]}>Search</Text>
+        </View>
         <View style={styles.searchField}>
           <SearchGlyph color={Amber} size={16} />
           <TextInput
@@ -125,6 +214,17 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
             </Pressable>
           )}
         </View>
+        {terms.length > 0 ? (
+          <Reading terms={terms} onRemove={removeTerm} />
+        ) : readByModel ? (
+          // The chips are the normal way to see the reading; when a model wrote
+          // the query there are none, and silence would read as "it understood
+          // nothing" — which is the opposite of what happened.
+          <Text style={[TowerType.bodyNote, { color: OnInkFaint, marginTop: 12 }]}>
+            Tower&apos;s own rules could not read that, so a model wrote the search. There
+            is no word-by-word reading to show.
+          </Text>
+        ) : null}
         {resultLine != null && <DataLabel text={resultLine} style={{ marginTop: 12 }} />}
       </View>
 
@@ -138,7 +238,9 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
        * surface, not a control.
        */}
       <Pressable style={{ flex: 1 }} onPress={Keyboard.dismiss} accessible={false}>
-        {results == null && <SearchIdle targets={jumpTargets} />}
+        {results == null && (
+          <SearchIdle targets={jumpTargets} canAsk={canAsk} onAsk={onOpenAssistant} />
+        )}
 
         {results?.type === 'LOADING' && (
           <View style={{ paddingHorizontal: Space.Screen, gap: 14 }}>
@@ -149,18 +251,22 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
         )}
 
         {results?.type === 'EMPTY' && (
-          <SearchMessage heading="Nothing found" body={results.message} />
-        )}
-
-        {results?.type === 'ASLEEP' && (
           <SearchMessage
-            heading="The disk is asleep"
-            body="Search needs the disk spinning. Wake Tower from the Home tab."
+            heading="Nothing found"
+            body={results.message}
+            // Only here. An empty list is the one moment where knowing the
+            // phrase was taken literally changes what to do next — above a
+            // screen of results it would be a lecture.
+            note={
+              understoodNothing && !readByModel
+                ? 'Tower read that as a title and searched for those words. Try a genre, a year or a language.'
+                : null
+            }
           />
         )}
 
-        {results?.type === 'OFFLINE' && (
-          <SearchMessage heading="Cannot reach Tower" body={results.message} />
+        {(results?.type === 'ASLEEP' || results?.type === 'OFFLINE') && (
+          <UiStateError state={results} onRetry={() => onQueryChange(query)} />
         )}
 
         {results?.type === 'LOADED' && (
@@ -184,6 +290,47 @@ export function SearchScreen({ onOpenTitle }: { onOpenTitle: (titleId: string) =
       <Text style={styles.footnote}>
         Tower searches the files on your own disk. Nothing is sent to the internet.
       </Text>
+    </View>
+  );
+}
+
+/**
+ * What Tower made of the phrase, as chips you can take back off.
+ *
+ * This is the feature, not a debug readout. A search box that quietly
+ * reinterprets a sentence leaves you nothing to argue with when it is wrong —
+ * all you can do is rephrase and hope. Drawn this way, a wrong reading is a
+ * visible, single, removable thing.
+ *
+ * The words each chip was read from sit under it in mono, because "Tamil" is
+ * only checkable against the sentence if you can see which part of the sentence
+ * became it.
+ */
+function Reading({
+  terms,
+  onRemove,
+}: {
+  terms: SearchTerm[];
+  onRemove: (term: SearchTerm) => void;
+}) {
+  return (
+    <View style={{ marginTop: 14 }}>
+      <DataLabel text="TOWER READ THIS AS" />
+      <View style={styles.reading}>
+        {terms.map((term) => (
+          <View key={`${term.field}:${term.label}`} style={{ alignItems: 'center' }}>
+            <RemovableChip
+              label={term.label}
+              // A term the server did not attribute to any words cannot be
+              // removed by editing them, so it is stated rather than offered.
+              onRemove={term.matched != null ? () => onRemove(term) : null}
+            />
+            {term.matched != null && (
+              <DataMeta text={`"${term.matched}"`} color={OnInkFaint} style={{ marginTop: 4 }} />
+            )}
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -260,22 +407,66 @@ function metaColor(title: Title): string {
   return title.plan.type === 'TRANSCODE' ? Amber : OnInkFaint;
 }
 
-function SearchIdle({ targets }: { targets: JumpTarget[] }) {
+function SearchIdle({
+  targets,
+  canAsk,
+  onAsk,
+}: {
+  targets: JumpTarget[];
+  canAsk: boolean;
+  onAsk: () => void;
+}) {
   return (
     <View style={{ paddingHorizontal: Space.Screen }}>
       <Text style={[TowerType.bodyProse, { color: OnInkMuted }]}>
-        Type to search the files on your disk by name.
+        Type to search the files on your disk by name, or describe what you are
+        after — &quot;tamil films under two hours&quot;.
       </Text>
+
+      {/*
+       * Only when the server actually has one. Offered here rather than as a
+       * mode of the field above, because the two take different input: that box
+       * takes a description and narrows a list, the assistant takes a question
+       * and answers it in a sentence.
+       */}
+      {canAsk && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Ask Tower a question"
+          onPress={onAsk}
+          style={({ pressed }) => [styles.askCard, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={[TowerType.titleRow, { color: OnInk }]}>Ask a question instead</Text>
+            <Text style={[TowerType.bodyNote, { color: OnInkFaint, marginTop: 3 }]}>
+              &quot;What can I finish tonight?&quot;
+            </Text>
+          </View>
+          <ChevronGlyph color={OnInkFaint} size={14} />
+        </Pressable>
+      )}
+
       {targets.length > 0 && <JumpToRow targets={targets} />}
     </View>
   );
 }
 
-function SearchMessage({ heading, body }: { heading: string; body: string }) {
+function SearchMessage({
+  heading,
+  body,
+  note,
+}: {
+  heading: string;
+  body: string;
+  note?: string | null;
+}) {
   return (
     <View style={{ paddingHorizontal: Space.Screen }}>
       <Text style={[TowerType.titleSection, { color: OnInk }]}>{heading}</Text>
       <Text style={[TowerType.bodyProse, { color: OnInkMuted, marginTop: 8 }]}>{body}</Text>
+      {note != null && (
+        <Text style={[TowerType.bodyNote, { color: OnInkFaint, marginTop: 10 }]}>{note}</Text>
+      )}
     </View>
   );
 }
@@ -293,6 +484,30 @@ function ResultSkeleton() {
 }
 
 const styles = StyleSheet.create({
+  searchBack: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+  },
+  askCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 16,
+    width: '100%',
+    borderRadius: Radius.Default,
+    backgroundColor: Surface1,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  reading: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',

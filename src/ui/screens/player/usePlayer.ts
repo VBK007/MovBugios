@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Chapter, PlaybackPlan, Title, effectiveDurationSeconds } from '@/domain/model/media';
+import {
+  Chapter,
+  Engagement,
+  PlaybackPlan,
+  Title,
+  effectiveDurationSeconds,
+} from '@/domain/model/media';
+import { DefaultLibraryFilters } from '@/domain/model/library';
 import {
   ClientCapabilities,
   PlaybackSource,
@@ -13,6 +20,7 @@ import { PreferencesStore } from '@/data/remote/preferencesStore';
 import { QualityCaps } from '@/domain/model/preferences';
 import { RemoteTowerRepository } from '@/data/remote/remoteTowerRepository';
 import { PartyEvent, PartySocket } from '@/data/remote/partySocket';
+import { PartyMessage } from '@/domain/model/watchParty';
 import { PartyClockFollower, departureNote, departures } from '@/domain/party/partyClockFollower';
 import { PartyClock, PartyMember } from '@/domain/model/watchParty';
 
@@ -80,6 +88,30 @@ export interface PartyPlayback {
   connected: boolean;
   /** "Amma paused" — shown briefly so the picture does not change silently. */
   note: string | null;
+  /**
+   * What the party has said, oldest first.
+   *
+   * Lives here and nowhere else: the messages arrive on the party's own socket,
+   * and when the party ends they are gone from this device and from the server
+   * at the same moment, because neither keeps a copy anywhere a party outlives.
+   */
+  chat: PartyMessage[];
+  /** How many have arrived since the sheet was last open. */
+  unreadChat: number;
+  /**
+   * Who is in the party, as the socket last reported them.
+   *
+   * Held here rather than left to the lobby because the host is in the player,
+   * not the lobby — "is anyone actually still with me" is asked while the thing
+   * is playing, and the answer was two screens away.
+   */
+  members: PartyMember[];
+  membersOpen: boolean;
+}
+
+/** Connected right now, which is what "listening" means on this screen. */
+export function partyWatching(party: PartyPlayback): number {
+  return party.members.filter((member) => member.online).length;
 }
 
 /** Which of the quick chips has a picker open. */
@@ -128,6 +160,18 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const remote = repository instanceof RemoteTowerRepository ? repository : null;
 
   const [content, setContent] = useState<UiState<PlayerContent>>(Loading);
+  /**
+   * The library's music, in order, including whatever is playing.
+   *
+   * Held in full rather than as "everything except this one" because the order
+   * is the queue: what follows a track is the row after it, and a list with the
+   * current one already removed cannot say which that is. The first attempt did
+   * exactly that and two tracks played each other forever.
+   */
+  const [musicTracks, setMusicTracks] = useState<Title[]>([]);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const contentRef = useRef(content);
+  contentRef.current = content;
   const [source, setSource] = useState<PlaybackSource | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [positionSeconds, setPositionSeconds] = useState(0);
@@ -149,6 +193,26 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
 
   /** Non-null when this playback is tied to a watch party. */
   const [party, setParty] = useState<PartyPlayback | null>(null);
+  /**
+   * Whether the chat sheet is open, which is also what marks it read.
+   *
+   * Held next to the party rather than in the screen: a message arriving while
+   * the sheet is open is already read, and a screen that owned this would have
+   * to tell the hook so.
+   */
+  const [chatOpen, setChatOpen] = useState(false);
+  /**
+   * The track the host has just moved the party to, for a member to follow.
+   *
+   * State rather than a callback for the same reason a seek request is: this
+   * hook holds no navigator, so it records what needs to happen and the screen
+   * performs it. Cleared once acted on.
+   */
+  const [partyMovedTo, setPartyMovedTo] = useState<string | null>(null);
+  const partyRef = useRef(party);
+  partyRef.current = party;
+  const chatOpenRef = useRef(chatOpen);
+  chatOpenRef.current = chatOpen;
   /**
    * Playback rate. 1.0 unless the party clock is nudging this device level — a
    * 6% change for a second or two, which nobody notices, instead of a seek,
@@ -198,8 +262,40 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const lastReportedSecond = useRef(0);
   const scrubbingRef = useRef(scrubbing);
   scrubbingRef.current = scrubbing;
-  const stateRef = useRef({ source, maxHeight, subtitleTrack, audioTrack, durationSeconds });
-  stateRef.current = { source, maxHeight, subtitleTrack, audioTrack, durationSeconds };
+/**
+   * Codecs this device has *proved* it cannot show the picture of.
+   *
+   * There is no way to say this in advance. The capabilities carry codec names
+   * and nothing else — no profile, no bit depth, nothing about how the stream is
+   * tagged inside its container — so two HEVC files that behave completely
+   * differently on this phone are the same word to the server, and it sends both
+   * untouched. One of them plays its sound and none of its picture.
+   *
+   * So the claim is withdrawn after the fact. A named codec rather than a blanket
+   * "convert everything", because `videoCodecs` minus one entry is an ordinary
+   * sentence any server already understands, where an empty list is an edge case
+   * each one may read differently. Dropping `hevc` leaves `h264`, which is the
+   * thing every phone plays.
+   *
+   * Per playback, and per codec. The next file is asked for normally.
+   */
+  const [refusedVideoCodecs, setRefusedVideoCodecs] = useState<string[]>([]);
+  const stateRef = useRef({
+    source,
+    maxHeight,
+    subtitleTrack,
+    audioTrack,
+    durationSeconds,
+    refusedVideoCodecs,
+  });
+  stateRef.current = {
+    source,
+    maxHeight,
+    subtitleTrack,
+    audioTrack,
+    durationSeconds,
+    refusedVideoCodecs,
+  };
   /**
    * What the party callbacks read.
    *
@@ -257,8 +353,25 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const deviceCapabilities = useCallback(
     (): ClientCapabilities => ({
       deviceName: 'iPhone',
-      videoCodecs: ['h264', 'hevc'],
-      audioCodecs: ['aac', 'mp3', 'ac3', 'eac3'],
+      // Minus whatever this file has already failed to show a picture of.
+      videoCodecs: ['h264', 'hevc'].filter(
+        (codec) => !stateRef.current.refusedVideoCodecs.includes(codec),
+      ),
+      /*
+       * No `ac3` or `eac3`, which is the whole of a bug worth remembering.
+       *
+       * This list began as the Android one and was trimmed for iOS — the
+       * containers and video codecs were, and Dolby Digital was missed. The
+       * server believes what a client claims, so every film with an AC-3 track
+       * was handed over as a direct play, and AVPlayer on an iPhone cannot
+       * decode it: the picture failed or arrived silent, on exactly the subset
+       * of films that happen to carry that audio.
+       *
+       * Dropping it means the server transcodes those to AAC instead. That
+       * costs it work it did not do before, on a minority of files, and buys
+       * them playing at all — which is not a close trade.
+       */
+      audioCodecs: ['aac', 'mp3', 'alac', 'flac'],
       containers: ['mp4', 'mov', 'm4v'],
       // What the user asked for, not what the phone can manage. Lowering this is
       // the whole mechanism behind the quality picker: the server reads it and
@@ -346,6 +459,10 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
     });
     setPositionSeconds(playerState.positionSeconds);
     setDurationSeconds(playerState.durationSeconds ?? effectiveDurationSeconds(title));
+
+    // Only for music, and only once the thing being played is on screen. A film
+    // has nothing to queue behind it.
+    if (title.kind === 'MUSIC') void loadUpNext(title);
     // The server remembers these per profile, so a film opens with the tracks it
     // was last watched with rather than making the same choice every time.
     setSubtitleTrackState(playerState.subtitleTrackIndex ?? null);
@@ -498,8 +615,9 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const seekTo = useCallback(
     (seconds: number) => {
       if (isFollower()) {
-        // Put the thumb back where the party actually is.
+        // Put the thumb back where the party actually is, and say why it went.
         setScrubbing(false);
+        showPartyNote('The host controls this party');
         showControls();
         return;
       }
@@ -570,24 +688,54 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
    * profile, so picking Tamil once means the next film opens in Tamil rather
    * than making the same choice again every time.
    */
+  /** Same split as the audio above: the stream is remade, or the player is aimed. */
   const setSubtitleTrack = useCallback(
     (index: number | null) => {
       setSubtitleTrackState(index);
       setSheet(null);
+      stateRef.current.subtitleTrack = index;
       void repository.setTracks(titleId, index, stateRef.current.audioTrack);
+      if (stateRef.current.source?.plan.type === 'TRANSCODE') {
+        void requestSource(positionSeconds);
+      }
       showControls();
     },
-    [repository, titleId, showControls],
+    [repository, titleId, positionSeconds, requestSource, showControls],
   );
 
+  /**
+   * Picks the language, and makes it actually happen.
+   *
+   * Telling the server was all this used to do, and the server only remembers
+   * the choice for the *next* time the file is opened — so on a dual-audio
+   * release the menu ticked a different language and the sound carried on
+   * exactly as it was. Nothing was broken; nothing was connected.
+   *
+   * Which half does the work depends on how the file is being sent:
+   *
+   * A **transcode** has one audio track encoded into it, chosen by the server
+   * when it started. There is nothing in the stream to switch to, so the only
+   * way to change language is to ask for a new stream — which is what the
+   * quality picker above already does for the same reason, and the server now
+   * knows the answer because it was told a line earlier.
+   *
+   * A **direct play** is the whole file, every track still in it, so the player
+   * can simply be pointed at a different one. That is instant and costs no
+   * re-buffer, which is the better experience and the reason not to re-request
+   * both ways round. The screen does that part, because it holds the player.
+   */
   const setAudioTrack = useCallback(
     (index: number | null) => {
       setAudioTrackState(index);
       setSheet(null);
+      stateRef.current.audioTrack = index;
       void repository.setTracks(titleId, stateRef.current.subtitleTrack, index);
+      if (stateRef.current.source?.plan.type === 'TRANSCODE') {
+        void requestSource(positionSeconds);
+      }
       showControls();
     },
-    [repository, titleId, showControls],
+    [repository, titleId, positionSeconds, requestSource, showControls],
   );
 
   // --- Watch party -------------------------------------------------------
@@ -725,6 +873,43 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
 
         // Sent rather than closing the socket. A member's stray control is the
         // usual cause, and the party carries on.
+        case 'ITEM_CHANGED': {
+          /*
+           * The host moved the party onto something else.
+           *
+           * Only members act. The host is already showing it — sending the
+           * frame is what they did when they got here — and moving them again
+           * would replace the screen they are standing on.
+           */
+          const current = partyRef.current;
+          if (current != null && !current.isHost && event.mediaItemId !== titleId) {
+            if (event.by != null) showPartyNote(`${event.by} changed the track`);
+            setPartyMovedTo(event.mediaItemId);
+          }
+          break;
+        }
+
+        case 'CHAT':
+          setParty((current) =>
+            current == null
+              ? current
+              : {
+                  ...current,
+                  chat: [...current.chat, event.message],
+                  // A message arriving while the sheet is open is already read.
+                  unreadChat: chatOpenRef.current ? 0 : current.unreadChat + 1,
+                },
+          );
+          break;
+
+        case 'CHAT_HISTORY':
+          // What was said before this device connected. Replaces rather than
+          // appends: it is the whole conversation, not a continuation of one.
+          setParty((current) =>
+            current == null ? current : { ...current, chat: event.messages, unreadChat: 0 },
+          );
+          break;
+
         case 'REFUSED':
           if (event.message) showPartyNote(event.message);
           break;
@@ -743,6 +928,10 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
         // is in here watching, and somebody slipping out silently is the one
         // thing about a party you cannot see from the picture.
         case 'MEMBERS': {
+          // Kept on the state now as well as compared: the eye beside the
+          // transport reads it, so the host can ask "is anyone still here"
+          // without leaving what they are playing.
+          setParty((live) => (live == null ? live : { ...live, members: event.members }));
           const gone = departures(partyMembers.current, event.members);
           partyMembers.current = event.members;
           const note = departureNote(gone);
@@ -772,7 +961,16 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
       }
       if (cancelled || !alive.current) return;
 
-      setParty({ code: joined.code, isHost: joined.youAreHost, connected: false, note: null });
+      setParty({
+        code: joined.code,
+        isHost: joined.youAreHost,
+        connected: false,
+        note: null,
+        chat: [],
+        unreadChat: 0,
+        members: joined.members,
+        membersOpen: false,
+      });
       partyMembers.current = joined.members;
       // A member must not start playing on its own: the party's clock says where
       // everyone is, and the first frame will set it.
@@ -782,6 +980,21 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
       if (!token) return;
       const live = remote.partySocket();
       socket.current = live;
+
+      /*
+       * The route carries the party through a track change, so a new join is
+       * also how the host says "we are on this one now".
+       *
+       * Harmless on the first join: the server ignores a change to the item it
+       * is already on. Host only — it refuses the frame from anyone else — and
+       * sent from here, where the player is already showing the new track, so
+       * it goes out once the change is real rather than while it is being
+       * attempted.
+       *
+       * Without it a music party silently split: the host's queue moved on and
+       * everybody else stayed on the song the party was created with.
+       */
+      if (joined.youAreHost) live.sendItem(titleId);
       closeSocket.current = live.connect(joined.code, token, onPartyEvent);
     })();
 
@@ -816,15 +1029,23 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   }, [party, announceHostPlayback]);
 
   const togglePlayPause = useCallback(() => {
-    // A member cannot drive the party. Refusing here rather than sending and
-    // being refused keeps the picture from jumping and coming back.
+    /*
+     * A member cannot drive the party. Refused here rather than sent and
+     * refused, which keeps the picture from jumping and coming back.
+     *
+     * Said out loud, though. A control that does nothing at all reads as a
+     * broken button, and somebody who cannot tell "this is the host's to do"
+     * from "this app is stuck" reaches for the second explanation — which
+     * usually means leaving the party.
+     */
     if (isFollower()) {
+      showPartyNote('The host controls this party');
       showControls();
       return;
     }
     setPlaying((p) => !p);
     showControls();
-  }, [isFollower, showControls]);
+  }, [isFollower, showPartyNote, showControls]);
 
   // Announced from an effect rather than inside the toggle: `setPlaying` is
   // asynchronous, so reading the new value inside the handler would send the old
@@ -882,8 +1103,181 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
     [scheduleHideControls],
   );
 
+  /**
+   * What else there is to play after this one.
+   *
+   * The library's music, newest first, with the current track taken out. Not an
+   * album's track listing: an album needs a query the server has no endpoint
+   * for, and most of what is on this disk is loose singles with an album tag
+   * that names the film they came from rather than a record.
+   *
+   * Loaded once, silently. A failure leaves the list empty, which hides the
+   * button — a queue that cannot be filled is better absent than present and
+   * apologising.
+   */
+  async function loadUpNext(current: Title): Promise<void> {
+    let tracks: Title[] = [];
+    try {
+      tracks = await repository.browse({ ...DefaultLibraryFilters, category: 'MUSIC' });
+    } catch {
+      tracks = [];
+    }
+    // Referenced so the loader keeps its parameter honest even when the list
+    // comes back without the current track in it at all.
+    void current;
+    if (!alive.current) return;
+    setMusicTracks(tracks);
+  }
+
+  /**
+   * Toggles the like on what is playing, moving the heart before the server
+   * answers.
+   *
+   * The same optimistic bookkeeping the detail screen does, for the same reason:
+   * this is one tap on something already on screen, and a heart that waits a
+   * tunnel's round trip to fill reads as a dead control. A refusal puts it back.
+   */
+  const toggleLike = useCallback(async () => {
+    if (!remote) return;
+    const current = contentRef.current;
+    if (current.type !== 'LOADED') return;
+    const title = current.data.title;
+    const before = title.engagement;
+    const wanted = !before.likedByMe;
+
+    const setEngagement = (engagement: Engagement) =>
+      setContent((state) =>
+        state.type === 'LOADED'
+          ? {
+              ...state,
+              data: { ...state.data, title: { ...state.data.title, engagement } },
+            }
+          : state,
+      );
+
+    setEngagement({
+      ...before,
+      likedByMe: wanted,
+      likes: Math.max(0, before.likes + (wanted ? 1 : -1)),
+    });
+
+    try {
+      const fresh = await remote.setLiked(title.id, wanted);
+      if (alive.current) setEngagement(fresh);
+    } catch {
+      if (alive.current) setEngagement(before);
+    }
+  }, [remote]);
+
+  const playingId = content.type === 'LOADED' ? content.data.title.id : null;
+  /** What the sheet lists: everything else, in the library's own order. */
+  const upNext = musicTracks.filter((track) => track.id !== playingId);
+  /**
+   * The row after this one, or null at the end.
+   *
+   * Deliberately does not wrap: a library that starts again from the top after
+   * forty minutes is one nobody asked to keep going.
+   */
+  const playingIndex = musicTracks.findIndex((track) => track.id === playingId);
+  const nextTrack = playingIndex >= 0 ? (musicTracks[playingIndex + 1] ?? null) : null;
+
+  const sendChat = useCallback((text: string) => {
+    const said = text.trim();
+    if (said === '') return;
+    // Nothing is shown until the server echoes it back. That costs a round trip
+    // on a line already carrying the clock, and buys the one thing that matters
+    // in a shared room: everybody sees the same conversation in the same order.
+    socket.current?.sendChat(said);
+  }, []);
+
+  const openChat = useCallback((open: boolean) => {
+    setChatOpen(open);
+    if (open) setParty((current) => (current == null ? current : { ...current, unreadChat: 0 }));
+  }, []);
+
+  const setMembersOpen = useCallback((open: boolean) => {
+    setParty((current) => (current == null ? current : { ...current, membersOpen: open }));
+  }, []);
+
+  /**
+   * Ends the party from here, without stopping the music.
+   *
+   * The host ends it for everyone and a member only leaves — the same split the
+   * lobby makes: a party is the host's, and a guest walking out is not
+   * everybody else's evening over.
+   *
+   * Playback is deliberately untouched. Ending a party is a statement about who
+   * else is listening, not about whether to carry on, and a control that
+   * silently stopped the music would be one nobody dared press.
+   */
+  const endParty = useCallback(async () => {
+    const live = partyRef.current;
+    if (remote == null || live == null) return;
+    try {
+      await remote.leaveParty(live.code, live.isHost);
+    } catch {
+      // The socket is closed either way: a party this device cannot leave
+      // cleanly is still one it has left.
+    }
+    socket.current?.disconnect();
+    socket.current = null;
+    // Dropped from the state as well as the wire, so the eye and the chat go
+    // with it rather than lingering over a party that is over.
+    if (alive.current) setParty(null);
+  }, [remote]);
+
+  /**
+   * Asks for the same film again, without the codec that gave no picture.
+   *
+   * Done rather than offered. The first version put a button here, and that was
+   * wrong: nothing about how a file is tagged inside its container is something
+   * a person should have to know, and a button reading "Convert it" asks them to
+   * diagnose a codec. It resumes where they were, so the cost is a few seconds
+   * of buffering and a line saying what happened.
+   *
+   * Returns false when this codec has already been refused, which is what keeps
+   * a file the server cannot fix from looping.
+   */
+  const refuseVideoCodec = useCallback(
+    (codec: string): boolean => {
+      const named = codec.trim().toLowerCase();
+      if (named === '' || stateRef.current.refusedVideoCodecs.includes(named)) return false;
+      const next = [...stateRef.current.refusedVideoCodecs, named];
+      stateRef.current.refusedVideoCodecs = next;
+      setRefusedVideoCodecs(next);
+      void requestSource(positionSeconds);
+      return true;
+    },
+    [positionSeconds, requestSource],
+  );
+
   return {
     content,
+    /**
+     * The library's music in order, current track included.
+     *
+     * Distinct from `upNext`, and the distinction is load-bearing: the sheet
+     * wants everything *except* what is playing, and the queue wants everything
+     * *including* it, because "what follows this" can only be answered by a list
+     * that contains this. Handing the queue the sheet's list left it unable to
+     * find the current track at all, so it reported nothing before and nothing
+     * after — a dead next button and no auto-advance.
+     */
+    musicTracks,
+    refusedVideoCodecs,
+    refuseVideoCodec,
+    partyMovedTo,
+    clearPartyMoved: () => setPartyMovedTo(null),
+    setMembersOpen,
+    endParty: () => void endParty(),
+    chatOpen,
+    openChat,
+    sendChat,
+    upNext,
+    nextTrack,
+    queueOpen,
+    setQueueOpen,
+    toggleLike: () => void toggleLike(),
     source,
     sourceError,
     positionSeconds,

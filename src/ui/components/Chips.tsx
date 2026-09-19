@@ -11,6 +11,7 @@ import {
   Surface2,
   TowerType,
 } from '@/theme';
+import { CloseGlyph } from '@/ui/components/Glyphs';
 import { withAlpha } from '@/ui/color';
 
 /** One filter, named by a measurement, so its label is mono. */
@@ -173,4 +174,54 @@ export const AllCategoriesLabel = 'All';
 
 export function CategoryRowSpacer() {
   return <View style={{ height: 10 }} />;
+}
+
+/**
+ * Something already applied, with the means to take it back off.
+ *
+ * Unlike `SelectableChip` this is not a choice being offered — it is a
+ * statement of what is currently in force, which is why it is drawn filled and
+ * quiet rather than amber. The cross is the only part that is an action.
+ *
+ * `onRemove` is nullable because not every applied thing can be un-applied;
+ * when it is null the chip is a label and says so by having nothing to press.
+ */
+export function RemovableChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove?: (() => void) | null;
+}) {
+  const body = (
+    <>
+      <Text style={[TowerType.buttonLabel, { color: OnInk }]} numberOfLines={1}>
+        {label}
+      </Text>
+      {onRemove != null && <CloseGlyph color={OnInkFaint} size={11} />}
+    </>
+  );
+
+  const style = {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 7,
+    borderRadius: Radius.Pill,
+    backgroundColor: Surface2,
+    paddingLeft: 12,
+    paddingRight: onRemove != null ? 9 : 12,
+    paddingVertical: 7,
+  };
+
+  if (onRemove == null) return <View style={style}>{body}</View>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Remove ${label}`}
+      onPress={onRemove}
+      style={({ pressed }) => [style, { opacity: pressed ? 0.7 : 1 }]}
+    >
+      {body}
+    </Pressable>
+  );
 }

@@ -2,7 +2,18 @@ import {
   AuthResponseDto,
   ContinueWatchingDto,
   ItemDetailDto,
+  AssistantAnswerDto,
+  AssistantAvailabilityDto,
+  AssistantRequestDto,
+  CastMemberDto,
+  CollectionListDto,
   ItemPageDto,
+  MusicHomeDto,
+  LanguageDto,
+  RecommendationsDto,
+  SearchResultDto,
+  TeaserClipDto,
+  TeaserFeedPageDto,
   ItemSummaryDto,
   LibrarySummaryDto,
   ProfileDto,
@@ -32,6 +43,15 @@ const NGROK_SKIP_WARNING = 'ngrok-skip-browser-warning';
  */
 const CONNECT_TIMEOUT_MS = 4_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * The assistant's own ceiling, well past the ordinary one.
+ *
+ * A question runs a loop of library lookups against a model server-side, which
+ * the server caps at 60 seconds. Cutting it off at the normal request timeout
+ * would abandon an answer that was still coming.
+ */
+const ASSISTANT_TIMEOUT_MS = 90_000;
 
 /**
  * The only place in the app that knows the server speaks HTTP.
@@ -101,16 +121,20 @@ export class TowerApi {
    */
   private async send(
     path: string,
-    init: RequestInit & { admin?: boolean } = {},
+    init: RequestInit & { admin?: boolean; timeoutMs?: number } = {},
   ): Promise<Response> {
-    const { admin, ...rest } = init;
+    const { admin, timeoutMs, ...rest } = init;
     const url = this.url(path);
 
     const attempt = (extra?: Record<string, string>) =>
-      fetchWithTimeout(url, {
-        ...rest,
-        headers: { ...this.authHeaders(admin), ...(rest.headers as object), ...extra },
-      });
+      fetchWithTimeout(
+        url,
+        {
+          ...rest,
+          headers: { ...this.authHeaders(admin), ...(rest.headers as object), ...extra },
+        },
+        timeoutMs,
+      );
 
     const sentToken = this.session.token.get();
     let response = await attempt();
@@ -521,6 +545,125 @@ export class TowerApi {
   }
 
   /**
+   * Only the languages the library actually holds, with English names resolved
+   * server-side.
+   *
+   * Derived from probed audio tracks rather than scraped metadata, so an
+   * unprobed library answers with an empty list — which the caller must treat
+   * as "ask the usual question", not as "this house speaks nothing".
+   */
+  languages(): Promise<LanguageDto[]> {
+    return this.getJson<LanguageDto[]>('/api/media/languages');
+  }
+
+  /** The music tab's home: browse rails computed from the audio itself. */
+  musicHome(limit = 20): Promise<MusicHomeDto> {
+    return this.getJson<MusicHomeDto>('/api/media/home/music', { limit });
+  }
+
+  // --- Collections -------------------------------------------------------
+
+  collections(): Promise<CollectionListDto> {
+    return this.getJson<CollectionListDto>('/api/media/collections');
+  }
+
+  /**
+   * A collection's titles, paged.
+   *
+   * Returns the same `ItemPageDto` the browse endpoint does — a collection is
+   * a saved query, so what comes back is a page of the library and nothing
+   * downstream needs to know it arrived by a different door.
+   */
+  collectionItems(id: string, page = 0, size = 40): Promise<ItemPageDto> {
+    return this.getJson<ItemPageDto>(
+      `/api/media/collections/${encodeURIComponent(id)}/items`,
+      { page, size },
+    );
+  }
+
+  /**
+   * What to watch, for the profile asking.
+   *
+   * Profile-scoped rather than account-scoped, which is the one endpoint where
+   * that distinction is the entire point: two people in the same house should
+   * not be told the same thing.
+   */
+  recommendations(limit = 20): Promise<RecommendationsDto> {
+    return this.getJson<RecommendationsDto>('/api/media/recommendations', { limit });
+  }
+
+  /**
+   * The whole phrase, not a title substring.
+   *
+   * Separate from `items?q=`, which is and stays a plain title match — this
+   * one reads "Tamil films under 2 hours rated over 8" and returns what it made
+   * of it alongside the results.
+   */
+  smartSearch(q: string, size = 60): Promise<SearchResultDto> {
+    return this.getJson<SearchResultDto>('/api/media/search', { q, size });
+  }
+
+  // --- The assistant -----------------------------------------------------
+
+  /**
+   * Whether there is an assistant to ask.
+   *
+   * Asked before the box is offered rather than discovered by asking: the server
+   * ships it off by default, and a question that can only be answered with
+   * "that is switched off" is worse than no box at all.
+   */
+  assistantAvailable(): Promise<AssistantAvailabilityDto> {
+    return this.getJson<AssistantAvailabilityDto>('/api/media/assistant');
+  }
+
+  /**
+   * Asks in the person's own words. Always 200, by the server's design — an
+   * assistant that is off or unreachable answers in prose rather than failing,
+   * so there is nothing here to retry into.
+   *
+   * The timeout is the server's own (60s) plus room: this runs a loop of lookups
+   * against a model, and the default request timeout would cut it off
+   * mid-thought.
+   */
+  async ask(question: string): Promise<AssistantAnswerDto> {
+    const response = await this.send('/api/media/assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question } satisfies AssistantRequestDto),
+      timeoutMs: ASSISTANT_TIMEOUT_MS,
+    });
+    return bodyOrThrow<AssistantAnswerDto>(response);
+  }
+
+  // --- Teaser shorts -----------------------------------------------------
+
+  /** The discovery feed: published clips across the whole library. */
+  teaserFeed(page = 0, size = 10, seed?: number | null): Promise<TeaserFeedPageDto> {
+    // Omitted on the first page, which is what asks for a fresh deal.
+    return this.getJson<TeaserFeedPageDto>('/api/media/teasers', { page, size, seed });
+  }
+
+  /**
+   * The billed names for a film, with photo URLs where the server has them.
+   *
+   * Separate from the detail payload, which carries the same names as one
+   * comma-separated string. This endpoint is what turns them into people with
+   * faces, and it is asked for only when a detail screen is open.
+   */
+  cast(itemId: string): Promise<CastMemberDto[]> {
+    return this.getJson<CastMemberDto[]>(
+      `/api/media/items/${encodeURIComponent(itemId)}/cast`,
+    );
+  }
+
+  /** Published clips for one film — what its detail screen offers. */
+  teasers(itemId: string): Promise<TeaserClipDto[]> {
+    return this.getJson<TeaserClipDto[]>(
+      `/api/media/items/${encodeURIComponent(itemId)}/teasers`,
+    );
+  }
+
+  /**
    * Sends both the old `limit` and the new `page`/`size`.
    *
    * The server replaced `limit` with paging in a later build, and each version
@@ -660,9 +803,13 @@ async function humanDetail(response: Response): Promise<string | null> {
 }
 
 /** `fetch` has no timeout of its own; without this a sleeping disk hangs forever. */
-async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {

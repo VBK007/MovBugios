@@ -116,3 +116,21 @@ export interface GuestSeat {
 export function normalisePartyCode(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 }
+
+/**
+ * One thing somebody in the party said.
+ *
+ * Never stored anywhere, on either side. They arrive on the socket, live for as
+ * long as the party does, and go when it does — which is the same answer the
+ * server gives, and the reason the two cannot drift into disagreeing about how
+ * long a party's chat lasts.
+ *
+ * `from` is a display name rather than a profile id because a name is all a
+ * reader needs, and an id would outlive the message it belonged to.
+ */
+export interface PartyMessage {
+  id: string;
+  from: string;
+  text: string;
+  atEpochMs: number;
+}

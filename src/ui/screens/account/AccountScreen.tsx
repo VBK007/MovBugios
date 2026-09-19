@@ -1,7 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 
-import { DirectPlay, Ink, OnInk, OnInkFaint, OnInkMuted, Space, TowerType, UserBlue } from '@/theme';
+import {
+  Amber,
+  AmberInk,
+  DirectPlay,
+  Ink,
+  OnInk,
+  OnInkFaint,
+  OnInkMuted,
+  Space,
+  TowerType,
+  UserBlue,
+} from '@/theme';
+import { withAlpha } from '@/ui/color';
 import { RemoteTowerRepository } from '@/data/remote/remoteTowerRepository';
 import { TowerHttpError } from '@/data/remote/errors';
 import { SignInRecord, signInMonoMeta } from '@/domain/model/signInRecord';
@@ -9,6 +29,8 @@ import { profileInitial } from '@/domain/model/people';
 import { Loading, ServerAsleepError, UiState, empty, loaded, offline } from '@/ui/uiState';
 import { formatSignInTime } from '@/ui/format/signInTime';
 import { useFlow, useRepository } from '@/ui/hooks';
+import { ProfileSheet } from '@/ui/components/ProfileSheet';
+import { UiSettings, showTechnicalBadgesFlow } from '@/data/uiSettings';
 import { ChevronGlyph } from '@/ui/components/Glyphs';
 import {
   Avatar,
@@ -55,6 +77,9 @@ export function AccountScreen({
 }) {
   const repository = useRepository();
   const profile = useFlow(repository.activeProfile);
+  const profiles = useFlow(repository.profiles);
+  const showBadges = useFlow(showTechnicalBadgesFlow);
+  const [pickingProfile, setPickingProfile] = useState(false);
   /**
    * Sign-in history belongs to a real server, so it is only available on the
    * remote repository. In guest mode this is null and the screen says so instead
@@ -133,7 +158,13 @@ export function AccountScreen({
           />
         }
       >
-        <View style={styles.identity}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Switch profile"
+          disabled={profiles.length === 0}
+          onPress={() => setPickingProfile(true)}
+          style={({ pressed }) => [styles.identity, { opacity: pressed ? 0.7 : 1 }]}
+        >
           <Avatar
             initial={profile ? profileInitial(profile) : '?'}
             size={52}
@@ -152,9 +183,26 @@ export function AccountScreen({
               />
             </View>
           </View>
-          {signedOut && <OutlineButton label="Sign in" onPress={onSignIn} />}
-        </View>
+          {signedOut ? (
+            <OutlineButton label="Sign in" onPress={onSignIn} />
+          ) : (
+            profiles.length > 0 && <ChevronGlyph color={OnInkFaint} size={14} />
+          )}
+        </Pressable>
 
+        <HairlineListItem
+          title="Show technical badges"
+          supporting="Sizes, codecs, bitrates and paths. Off leaves the plain English."
+          trailing={
+            <Switch
+              value={showBadges}
+              onValueChange={(next) => void UiSettings.setShowTechnicalBadges(next)}
+              thumbColor={showBadges ? AmberInk : OnInkFaint}
+              trackColor={{ true: Amber, false: withAlpha(OnInk, 0.12) }}
+              ios_backgroundColor={withAlpha(OnInk, 0.12)}
+            />
+          }
+        />
         <HairlineListItem
           title="Genres you like"
           supporting="What Home leads with"
@@ -200,6 +248,21 @@ export function AccountScreen({
           />
         )}
       </ScrollView>
+
+      {pickingProfile && (
+        <ProfileSheet
+          profiles={profiles}
+          activeId={profile?.id ?? null}
+          onSelect={(next) => {
+            setPickingProfile(false);
+            // Every screen keys its loads on the profile id, so switching
+            // here re-reads the library as that person without anything
+            // else needing to know a switch happened.
+            void repository.selectProfile(next.id);
+          }}
+          onDismiss={() => setPickingProfile(false)}
+        />
+      )}
     </View>
   );
 }

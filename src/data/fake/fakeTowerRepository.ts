@@ -1,3 +1,15 @@
+import { EmptyMusicHome, MusicHome } from '@/domain/model/musicHome';
+import { Answer } from '@/domain/model/assistant';
+import { EmptyTeaserPage, Teaser, TeaserPage } from '@/domain/model/teaser';
+import { CastMember } from '@/domain/model/people';
+import {
+  Collections,
+  EmptySearchResults,
+  Recommendation,
+  SearchResults,
+  SearchTerm,
+} from '@/domain/model/collection';
+import { Language } from '@/domain/model/preferences';
 import { Flow, MutableStateFlow } from '@/data/store';
 import * as SampleLibrary from '@/data/fake/sampleLibrary';
 import { SavedItem, SavedSummary, isInProgress } from '@/domain/model/downloads';
@@ -13,6 +25,7 @@ import {
   Title,
   effectiveDurationSeconds,
   isTitle4k,
+  primaryGenre,
 } from '@/domain/model/media';
 import {
   ClientCapabilities,
@@ -182,16 +195,223 @@ export class FakeTowerRepository implements TowerRepository {
     return { ...title, positionSeconds: this.progress.get(titleId) ?? title.positionSeconds };
   }
 
-  async search(query: string): Promise<Title[]> {
+  /**
+   * A deliberately small version of the server's sentence parse.
+   *
+   * It reads a genre and a year out of the phrase and nothing else. The point is
+   * not to match the server rule for rule — it is that the chips are real here
+   * too, so the screen can be exercised without one, and so a phrase this
+   * reading cannot make sense of reports `understoodNothing` honestly rather
+   * than pretending to have understood.
+   */
+  async search(query: string): Promise<SearchResults> {
     await this.pause(220);
     this.requireAwake();
-    if (query.trim() === '') return [];
-    const needle = query.toLowerCase();
-    return SampleLibrary.all.filter(
-      (t) =>
-        t.name.toLowerCase().includes(needle) ||
-        t.file.filename.toLowerCase().includes(needle),
-    );
+    if (query.trim() === '') return EmptySearchResults;
+
+    const words = query.split(/[ ,]+/).filter((w) => w !== '');
+    const genres = [...new Set(SampleLibrary.all.flatMap((t) => t.genres))];
+
+    let genre: { matched: string; name: string } | null = null;
+    for (const word of words) {
+      const hit = genres.find((g) => g.toLowerCase() === word.toLowerCase());
+      if (hit) {
+        genre = { matched: word, name: hit };
+        break;
+      }
+    }
+    const yearWord = words.find((w) => /^\d{4}$/.test(w));
+    const year = yearWord != null ? Number(yearWord) : null;
+
+    const terms: SearchTerm[] = [];
+    if (genre) terms.push({ field: 'genre', label: genre.name, matched: genre.matched });
+    if (year != null) {
+      terms.push({ field: 'year', label: `From ${year}`, matched: String(year) });
+    }
+
+    // Whatever the parse claimed is removed from the free text, so "action
+    // 2019" does not then also have to appear in a filename.
+    const rest = words
+      .filter((w) => !terms.some((t) => t.matched?.toLowerCase() === w.toLowerCase()))
+      .join(' ');
+
+    const chosen = genre;
+    const titles = SampleLibrary.all.filter((title) => {
+      if (chosen && !title.genres.some((g) => g.toLowerCase() === chosen.name.toLowerCase())) {
+        return false;
+      }
+      if (year != null && title.year !== year) return false;
+      if (rest.trim() === '') return true;
+      const needle = rest.toLowerCase();
+      return (
+        title.name.toLowerCase().includes(needle) ||
+        title.file.filename.toLowerCase().includes(needle)
+      );
+    });
+
+    return { titles, terms, understoodNothing: terms.length === 0, readByModel: false };
+  }
+
+  /**
+   * Empty, deliberately — the sample library has no standing to answer this.
+   *
+   * The obvious implementation derives it from the sample files' audio tracks,
+   * and that is actively wrong. The first-run questions are asked *before*
+   * anyone signs in, so on a fresh install this repository is what they reach:
+   * returning English and Hindi because two invented files carry them would
+   * offer a Tamil household two languages it does not want and hide the six it
+   * might. Empty means "no server to ask", which is the truth here, and the
+   * screen falls back to the standing list.
+   */
+  async libraryLanguages(): Promise<Language[]> {
+    return [];
+  }
+
+  /**
+   * A plausible handful, so the screen has something to be.
+   *
+   * Unlike the languages above, inventing these is harmless: a collection is a
+   * *name for a query*, and the sample library really does contain unwatched
+   * titles and 4K ones. The counts are computed from it rather than typed in,
+   * so a preview cannot claim nine films the sample disk has never had.
+   */
+async assistantAvailable(): Promise<boolean> {
+    return false;
+  }
+
+  async ask(): Promise<Answer> {
+    return {
+      text: 'There is no server to ask. Connect to Tower to use the assistant.',
+      lookups: [],
+      answered: false,
+    };
+  }
+
+  /**
+   * Empty, and for the same reason the assistant is off.
+   *
+   * A teaser is a real encode of a real film's real frames. The sample library
+   * has no files behind it, so the only thing that could be returned here is a
+   * clip that does not play — and a feed of those is worse than a feed that
+   * honestly says the disk has none.
+   */
+  async teaserFeed(): Promise<TeaserPage> {
+    return EmptyTeaserPage;
+  }
+
+  async cast(): Promise<CastMember[]> {
+    return [];
+  }
+
+  async teasers(): Promise<Teaser[]> {
+    return [];
+  }
+
+  async trackPreview(): Promise<PlaybackSource | null> {
+    return null;
+  }
+
+    /**
+   * Empty, for the same reason the assistant is off: the sample library has no
+   * audio to analyse, and rails derived from tempo and energy cannot be invented
+   * without claiming a machine listened to something.
+   */
+  async musicHome(): Promise<MusicHome> {
+    return EmptyMusicHome;
+  }
+
+  async collections(): Promise<Collections> {
+    await this.pause();
+    this.requireAwake();
+    const unwatched = SampleLibrary.all.filter((t) => t.watchState !== 'WATCHED').length;
+    const fourK = SampleLibrary.all.filter((t) => isTitle4k(t)).length;
+    const ours = SampleLibrary.homeVideos.length;
+
+    const byGenre = new Map<string, number>();
+    for (const genre of SampleLibrary.all.flatMap((t) => t.genres)) {
+      byGenre.set(genre, (byGenre.get(genre) ?? 0) + 1);
+    }
+
+    return {
+      builtin: [
+        {
+          id: 'builtin:never-watched',
+          kind: 'BUILTIN',
+          name: 'Never watched',
+          icon: '👀',
+          pinned: false,
+          itemCount: unwatched,
+        },
+        {
+          id: 'builtin:four-k',
+          kind: 'BUILTIN',
+          name: 'In 4K',
+          icon: '✨',
+          pinned: false,
+          itemCount: fourK,
+        },
+        {
+          id: 'builtin:our-own',
+          kind: 'BUILTIN',
+          name: 'Ours',
+          icon: '🏠',
+          pinned: false,
+          itemCount: ours,
+        },
+      ],
+      custom: [],
+      discovered: [...byGenre.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([genre, count]) => ({
+          id: `discovered:genre:${genre.toLowerCase()}`,
+          kind: 'DISCOVERED' as const,
+          name: genre,
+          icon: null,
+          pinned: false,
+          itemCount: count,
+        })),
+    };
+  }
+
+  async collectionItems(id: string): Promise<Title[]> {
+    await this.pause();
+    this.requireAwake();
+    if (id.endsWith('never-watched')) {
+      return SampleLibrary.all.filter((t) => t.watchState !== 'WATCHED');
+    }
+    if (id.endsWith('four-k')) return SampleLibrary.all.filter((t) => isTitle4k(t));
+    if (id.endsWith('our-own')) return SampleLibrary.homeVideos;
+    if (id.startsWith('discovered:genre:')) {
+      const genre = id.slice(id.lastIndexOf(':') + 1);
+      return SampleLibrary.all.filter((t) =>
+        t.genres.some((g) => g.toLowerCase() === genre.toLowerCase()),
+      );
+    }
+    return SampleLibrary.all;
+  }
+
+  /**
+   * Highly-rated titles nobody has finished, with the reason spelled out.
+   *
+   * Not the real algorithm and not pretending to be — the point is that the rail
+   * has the right *shape* offline: a few posters, each carrying a sentence
+   * naming why it is there. A reason invented from the sample library's own
+   * genres is honest about being sample data.
+   */
+  async recommendations(limit = 20): Promise<Recommendation[]> {
+    await this.pause();
+    this.requireAwake();
+    const seed =
+      SampleLibrary.all.find((t) => t.watchState === 'WATCHED') ?? SampleLibrary.all[0];
+    return SampleLibrary.all
+      .filter((t) => t.watchState !== 'WATCHED' && (t.rating ?? 0) > 0)
+      .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+      .slice(0, limit)
+      .map((title) => {
+        const genre = primaryGenre(title);
+        return { title, reason: genre != null ? `More ${genre}, like ${seed.name}` : null };
+      });
   }
 
   async jumpTargets(query: string): Promise<JumpTarget[]> {

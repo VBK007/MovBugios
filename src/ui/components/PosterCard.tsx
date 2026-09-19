@@ -26,6 +26,8 @@ export function PosterCard({
   showUnwatchedDot = true,
   /** The mono line under the poster, e.g. `1080p · 4.2 GB`. */
   meta,
+  /** Two for a sentence, one for a measurement. See `DataMeta`. */
+  metaMaxLines = 1,
   style,
 }: {
   title: Title;
@@ -33,6 +35,7 @@ export function PosterCard({
   width?: number | null;
   showUnwatchedDot?: boolean;
   meta?: string | null;
+  metaMaxLines?: number;
   style?: StyleProp<ViewStyle>;
 }) {
   const [from, to] = gradientFor(title.name);
@@ -102,6 +105,7 @@ export function PosterCard({
         <DataMeta
           text={line}
           color={unavailable ? 'rgba(246,243,236,0.22)' : OnInkFaint}
+          maxLines={metaMaxLines}
           style={{ marginTop: 6 }}
         />
       )}

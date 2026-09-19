@@ -19,6 +19,7 @@ const KEY_LANGUAGE = 'tower.pref.language';
 const KEY_GENRES = 'tower.pref.genres';
 const KEY_QUALITY = 'tower.pref.mobileQuality';
 const KEY_COMPLETED = 'tower.pref.completed';
+const KEY_BADGES = 'tower.pref.showTechnicalBadges';
 
 /** A genre cannot contain a newline; a comma or a slash it might. */
 const SEPARATOR = '\n';
@@ -31,6 +32,7 @@ export const PreferencesStore = {
     const genres = await CredentialStore.read(KEY_GENRES);
     const quality = await CredentialStore.read(KEY_QUALITY);
     const completed = await CredentialStore.read(KEY_COMPLETED);
+    const badges = await CredentialStore.read(KEY_BADGES);
 
     return {
       language: language && language.trim() !== '' ? language : null,
@@ -39,6 +41,9 @@ export const PreferencesStore = {
         .map((g) => g.trim())
         .filter((g) => g !== ''),
       mobileQuality: CAPS.find((c) => c === quality) ?? DefaultPreferences.mobileQuality,
+      // Absent means on: the badges are the default, and a store that has never
+      // been written should look like a fresh install rather than a stripped one.
+      showTechnicalBadges: badges !== 'false',
       completed: completed === 'true',
     };
   },
@@ -48,6 +53,7 @@ export const PreferencesStore = {
     const genres = preferences.genres.join(SEPARATOR);
     await CredentialStore.write(KEY_GENRES, genres !== '' ? genres : null);
     await CredentialStore.write(KEY_QUALITY, preferences.mobileQuality);
+    await CredentialStore.write(KEY_BADGES, preferences.showTechnicalBadges ? null : 'false');
     // Written last, so a crash midway leaves the questions unanswered rather
     // than answered with half a result.
     await CredentialStore.write(KEY_COMPLETED, preferences.completed ? 'true' : null);

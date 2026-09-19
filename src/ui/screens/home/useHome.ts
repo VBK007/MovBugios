@@ -1,25 +1,46 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Title } from '@/domain/model/media';
+import { Recommendation } from '@/domain/model/collection';
+import { DefaultLibraryFilters } from '@/domain/model/library';
 import { ServerState } from '@/domain/model/server';
 import { Loading, ServerAsleepError, UiState, dataOrNull, empty, loaded, offline } from '@/ui/uiState';
-import { useFlow, useRepository } from '@/ui/hooks';
+import { useActiveProfileId, useFlow, useRepository } from '@/ui/hooks';
 import { RecentArt } from '@/data/remote/recentArt';
 
 export interface HomeContent {
   continueWatching: Title[];
+  /**
+   * Chosen for whoever is signed in, each carrying why.
+   *
+   * Kept as `Recommendation` rather than flattened to titles: the reason is the
+   * only thing separating this rail from the four around it.
+   */
+  forYou: Recommendation[];
   recentlyAdded: Title[];
   /** Empty until the library has matched metadata; the rail then hides itself. */
   topRated: Title[];
   fromCameraRoll: Title[];
+  /**
+   * One shelf of music, and its name.
+   *
+   * Whichever rail the server put first, carried with its own heading rather
+   * than flattened under a fixed "Music" — the server computed it from what the
+   * tracks actually sound like, so "Feeling Energetic" says something "Music"
+   * does not. The Library tab has the other seventeen.
+   */
+  music: Title[];
+  musicHeading: string;
 }
 
 function isEmptyContent(c: HomeContent): boolean {
   return (
     c.continueWatching.length === 0 &&
+    c.forYou.length === 0 &&
     c.recentlyAdded.length === 0 &&
     c.topRated.length === 0 &&
-    c.fromCameraRoll.length === 0
+    c.fromCameraRoll.length === 0 &&
+    c.music.length === 0
   );
 }
 
@@ -48,6 +69,7 @@ export function useHome() {
   const repository = useRepository();
   const serverState = useFlow(repository.serverState);
   const profile = useFlow(repository.activeProfile);
+  const profileId = useActiveProfileId();
 
   const [content, setContent] = useState<UiState<HomeContent>>(Loading);
   const [refreshing, setRefreshing] = useState(false);
@@ -79,23 +101,29 @@ export function useHome() {
       setContent(Loading);
     }
 
-    const [continueWatching, recentlyAdded, topRated, cameraRoll] = await Promise.all([
+    const [continueWatching, forYou, recentlyAdded, topRated, cameraRoll, music] =
+      await Promise.all([
       attempt(() => repository.continueWatching()),
+      attempt(() => repository.recommendations(12)),
       attempt(() => repository.recentlyAdded()),
       attempt(() => repository.topRated(12)),
-      attempt(() => repository.recentlyAdded(['HOME_VIDEO'], 10)),
+      attempt(() => cameraRollTitles(repository)),
+      attempt(() => homeMusicShelf(repository)),
     ]);
 
     if (!alive.current || run !== sequence.current) return;
 
-    const results = [continueWatching, recentlyAdded, topRated, cameraRoll];
+    const results = [continueWatching, forYou, recentlyAdded, topRated, cameraRoll, music];
     const anySucceeded = results.some((r) => r.ok);
 
     const next: HomeContent = {
       continueWatching: continueWatching.ok ? continueWatching.value : [],
+      forYou: forYou.ok ? forYou.value : [],
       recentlyAdded: recentlyAdded.ok ? recentlyAdded.value : [],
       topRated: topRated.ok ? topRated.value : [],
       fromCameraRoll: cameraRoll.ok ? cameraRoll.value : [],
+      music: music.ok ? music.value.tracks : [],
+      musicHeading: music.ok ? music.value.heading : 'Music',
     };
 
     if (!anySucceeded) {
@@ -122,7 +150,8 @@ export function useHome() {
       .map((title) => title.backdropUrl ?? title.posterUrl)
       .filter((url): url is string => url != null);
     if (art.length > 0) void RecentArt.save(art);
-  }, [repository]);
+    // Keyed on the profile too: every rail is per-person server-side.
+  }, [repository, profileId]);
 
   // Load once, unconditionally. Waiting for a particular server state left the
   // screen on its skeleton forever whenever the state was anything else — being
@@ -160,6 +189,53 @@ export function useHome() {
     wakeServer: () => void wakeServer(),
     data: dataOrNull(content),
   };
+}
+
+/**
+ * Home videos for the camera-roll rail, the sure way round.
+ *
+ * `recently-added?types=HOME_VIDEO` is the direct question and is tried first.
+ * But a server that does not understand the `types` filter answers with an
+ * error, and `attempt` above turns any failure into an empty list — so a
+ * rejected request and a library with no home videos produced exactly the same
+ * blank rail, with nothing to tell them apart.
+ *
+ * Browsing the category is a different endpoint answering the same question, so
+ * it stands in when the first comes back with nothing. A library that genuinely
+ * has no home videos still yields an empty rail, which is correct — the rail
+ * hides itself and nothing is claimed that is not there.
+ */
+async function cameraRollTitles(repository: ReturnType<typeof useRepository>): Promise<Title[]> {
+  try {
+    const direct = await repository.recentlyAdded(['HOME_VIDEO'], 10);
+    if (direct.length > 0) return direct;
+  } catch {
+    // Fall through: the browse below is the same question asked differently.
+  }
+  const browsed = await repository.browse(
+    { ...DefaultLibraryFilters, category: 'HOME_VIDEO' },
+    0,
+  );
+  return browsed.slice(0, 10);
+}
+
+/**
+ * The one shelf of music Home carries, and what to call it.
+ *
+ * Part-played tracks win when there are any — a song somebody stopped halfway is
+ * a better offer than anything computed. Otherwise the first rail the server
+ * sent, under its own name.
+ */
+async function homeMusicShelf(
+  repository: ReturnType<typeof useRepository>,
+): Promise<{ heading: string; tracks: Title[] }> {
+  const home = await repository.musicHome(12);
+  if (home.continueListening.length > 0) {
+    return { heading: 'Pick up where you left off', tracks: home.continueListening };
+  }
+  const first = home.rails[0];
+  if (first != null) return { heading: first.title, tracks: first.tracks };
+  return { heading: 'Music', tracks: [] };
 }
 
 /** A dead connection means asleep; anything else is reported as offline. */

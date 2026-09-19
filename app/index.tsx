@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { PreferencesStore } from '@/data/remote/preferencesStore';
 import { RecentArt } from '@/data/remote/recentArt';
+import { UiSettings } from '@/data/uiSettings';
 import { ServiceLocator } from '@/di/serviceLocator';
 import { OnboardingScreen } from '@/ui/screens/onboarding/OnboardingScreen';
 import { SplashScreen } from '@/ui/screens/splash/SplashScreen';
@@ -66,6 +67,10 @@ export default function Index() {
     }, SLOW_AFTER_MS);
 
     void (async () => {
+      // Before anything is drawn: this decides whether half the labels in the
+      // app exist at all, and flipping them a second in would read as a glitch.
+      await UiSettings.load();
+
       let restored = false;
       try {
         restored = await ServiceLocator.remoteRepository().restoreSession();

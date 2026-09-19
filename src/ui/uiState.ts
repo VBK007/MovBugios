@@ -1,3 +1,4 @@
+import { TowerAuthError, TowerHttpError } from '@/data/remote/errors';
 /**
  * The four states every screen in Tower has to be able to draw.
  *
@@ -16,7 +17,19 @@ export type UiState<T> =
   /** The disk is spun down. Recoverable by waking it. */
   | { type: 'ASLEEP' }
   /** We cannot reach the server at all. */
-  | { type: 'OFFLINE'; message: string };
+  | {
+      type: 'OFFLINE';
+      message: string;
+      /**
+       * `HTTP 503` — what the server actually said, where it said anything.
+       *
+       * Separate from `message` because the two are different registers and the
+       * app types them differently: the message is a sentence a person reads,
+       * this is a measurement, so it is mono and hidden with the other technical
+       * badges. Null when nothing answered at all, which is its own fact.
+       */
+      detail?: string | null;
+    };
 
 export const Loading: UiState<never> = { type: 'LOADING' };
 export const Asleep: UiState<never> = { type: 'ASLEEP' };
@@ -29,8 +42,8 @@ export function empty(message: string): UiState<never> {
   return { type: 'EMPTY', message };
 }
 
-export function offline(message: string): UiState<never> {
-  return { type: 'OFFLINE', message };
+export function offline(message: string, detail?: string | null): UiState<never> {
+  return { type: 'OFFLINE', message, detail: detail ?? null };
 }
 
 export function dataOrNull<T>(state: UiState<T>): T | null {
@@ -61,6 +74,21 @@ export async function loadState<T>(
   } catch (error) {
     if (error instanceof ServerAsleepError) return Asleep;
     const message = error instanceof Error ? error.message : null;
-    return offline(message ?? 'We cannot reach the server.');
+    return offline(message ?? 'We cannot reach the server.', statusLine(error));
   }
+}
+
+/**
+ * `HTTP 503` — the one line worth showing from a failure, or null.
+ *
+ * Deliberately only the code. The server's own detail string is already the
+ * message above it, and repeating it in mono underneath would be the same
+ * sentence twice in two typefaces.
+ */
+export function statusLine(error: unknown): string | null {
+  if (error instanceof TowerAuthError) return `HTTP ${error.code}`;
+  if (error instanceof TowerHttpError) {
+    return error.missingEndpoint ? 'ENDPOINT NOT ON THIS SERVER' : `HTTP ${error.code}`;
+  }
+  return null;
 }

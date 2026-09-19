@@ -1,12 +1,15 @@
 import React from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Amber, Ink, OnInk, OnInkFaint, OnInkMuted, Space, TowerType, UserBlue } from '@/theme';
 import { Profile, profileInitial } from '@/domain/model/people';
 import { greeting } from '@/ui/format/greeting';
 import { Avatar } from '@/ui/components/Primitives';
+import { SearchGlyph } from '@/ui/components/Glyphs';
 import { ContinueWatchingCard } from '@/ui/components/ContinueWatchingCard';
 import { PosterCard } from '@/ui/components/PosterCard';
+import { AlbumTile } from '@/ui/screens/library/MusicShelves';
+import { Title } from '@/domain/model/media';
 import { HomeVideoTile, PosterSkeleton, Rail, Skeleton } from '@/ui/components/Rails';
 import { ServerStateBanner, ServerStatusLine } from '@/ui/components/ServerStateBanner';
 import { ServerState } from '@/domain/model/server';
@@ -16,9 +19,14 @@ import { useHome } from '@/ui/screens/home/useHome';
 export function HomeScreen({
   onOpenTitle,
   onOpenProfile,
+  onOpenSearch,
+  onPlayMusic,
 }: {
   onOpenTitle: (titleId: string) => void;
   onOpenProfile: () => void;
+  onOpenSearch: () => void;
+  /** A sleeve on the music rail was tapped: play it and queue the rest. */
+  onPlayMusic: (tracks: Title[], index: number) => void;
 }) {
   const { content, serverState, profile, refreshing, refresh, wakeServer } = useHome();
 
@@ -30,7 +38,12 @@ export function HomeScreen({
         <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={OnInkFaint} />
       }
     >
-      <HomeHeader profile={profile} serverState={serverState} onOpenProfile={onOpenProfile} />
+      <HomeHeader
+        profile={profile}
+        serverState={serverState}
+        onOpenProfile={onOpenProfile}
+        onOpenSearch={onOpenSearch}
+      />
 
       {/* Only appears when there is something to explain. */}
       {serverState.type !== 'ONLINE' && (
@@ -77,6 +90,47 @@ export function HomeScreen({
                 onPlay={() => onOpenTitle(content.data.continueWatching[0].id)}
               />
             </View>
+          )}
+
+          {/*
+           * Above Recently added: what somebody should watch beats what happens
+           * to be newest, and this is the only rail on the screen that knows who
+           * is asking.
+           */}
+          {content.data.forYou.length > 0 && (
+            <Rail heading="For you">
+              {content.data.forYou.map((pick) => (
+                <PosterCard
+                  key={pick.title.id}
+                  title={pick.title}
+                  onPress={() => onOpenTitle(pick.title.id)}
+                  // The reason is the rail. Without it this is four posters
+                  // under a heading that claims to know you and shows no working.
+                  meta={pick.reason}
+                  metaMaxLines={2}
+                />
+              ))}
+            </Rail>
+          )}
+
+          {/*
+           * Square, unlike everything above it. On a screen of posters that
+           * shape alone says "this is music" before a word is read, and it is
+           * the shape the art actually is.
+           */}
+          {content.data.music.length > 0 && (
+            <Rail heading={content.data.musicHeading}>
+              {content.data.music.map((track, index) => (
+                <AlbumTile
+                  key={track.id}
+                  track={track}
+                  // Plays, like the shelves in the library do. A tile that
+                  // opened a detail screen here and played there would be the
+                  // same picture meaning two different things.
+                  onPress={() => onPlayMusic(content.data.music, index)}
+                />
+              ))}
+            </Rail>
           )}
 
           {content.data.recentlyAdded.length > 0 && (
@@ -128,10 +182,12 @@ function HomeHeader({
   profile,
   serverState,
   onOpenProfile,
+  onOpenSearch,
 }: {
   profile: Profile | null;
   serverState: ServerState;
   onOpenProfile: () => void;
+  onOpenSearch: () => void;
 }) {
   return (
     <View style={styles.header}>
@@ -145,6 +201,19 @@ function HomeHeader({
         </Text>
         <ServerStatusLine state={serverState} style={{ marginTop: 6 }} />
       </View>
+      {/*
+       * Search moved off the bottom bar to here, beside the avatar: it is
+       * something you go and do and come back from, rather than a place to be.
+       */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Search the disk"
+        onPress={onOpenSearch}
+        style={({ pressed }) => [styles.headerAction, { opacity: pressed ? 0.6 : 1 }]}
+      >
+        <SearchGlyph color={OnInk} size={19} />
+      </Pressable>
+
       {/* Admin lives behind this avatar, not in the bottom nav. */}
       <Avatar
         initial={profile ? profileInitial(profile) : '?'}
@@ -189,6 +258,13 @@ function HomeSkeleton() {
 }
 
 const styles = StyleSheet.create({
+  headerAction: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   scroll: {
     paddingTop: 18,
     paddingBottom: 28,

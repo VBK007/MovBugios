@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import React, { useState } from 'react';
 import {
   LayoutAnimation,
@@ -25,6 +26,7 @@ import {
   TowerType,
 } from '@/theme';
 import { withAlpha } from '@/ui/color';
+import { artSource } from '@/ui/imageSource';
 import { StarGlyph } from '@/ui/components/Glyphs';
 import { DataLabel } from '@/ui/components/Primitives';
 
@@ -164,11 +166,20 @@ export function Storyline({
 export function CastRail({
   cast,
   directors,
+  /**
+   * Name to photo URL, for the few the server could resolve.
+   *
+   * A map rather than a richer cast type because the names themselves still come
+   * from the detail payload — this only adds faces to a rail that already works
+   * without them, and arrives a moment later than the names do.
+   */
+  photos = {},
   onPerson,
   style,
 }: {
   cast: string[];
   directors: string[];
+  photos?: Record<string, string>;
   onPerson?: (name: string) => void;
   style?: StyleProp<ViewStyle>;
 }) {
@@ -201,6 +212,7 @@ export function CastRail({
             key={`${role}/${name}`}
             name={name}
             role={role}
+            photoUrl={photos[name]}
             onPress={onPerson ? () => onPerson(name) : undefined}
           />
         ))}
@@ -212,10 +224,12 @@ export function CastRail({
 function PersonBubble({
   name,
   role,
+  photoUrl,
   onPress,
 }: {
   name: string;
   role: string | null;
+  photoUrl?: string;
   onPress?: () => void;
 }) {
   const tint = PosterGradients[stableIndex(name, PosterGradients.length)][0];
@@ -229,6 +243,20 @@ function PersonBubble({
         ]}
       >
         <Text style={[TowerType.titleItem, { color: tint }]}>{initialsOf(name)}</Text>
+        {/*
+         * Over the initials, not instead of them. The tinted circle is what
+         * shows while the photo is fetched, what shows if it 404s, and what
+         * shows for the majority of names that never resolve — it was designed
+         * to be the answer, not a placeholder.
+         */}
+        {photoUrl != null && (
+          <Image
+            source={artSource(photoUrl)}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={140}
+          />
+        )}
       </View>
       <Text
         style={[TowerType.bodyNote, { color: OnInk, textAlign: 'center', marginTop: 8 }]}

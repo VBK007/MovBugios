@@ -9,7 +9,15 @@ export default function LibraryRoute() {
   const router = useRouter();
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Ink }} edges={['top']}>
-      <LibraryScreen onOpenTitle={(titleId: string) => router.push(`/detail/${titleId}`)} />
+      <LibraryScreen
+        onOpenTitle={(titleId: string) => router.push(`/detail/${titleId}`)}
+        onOpenCollections={() => router.push('/collections')}
+        onOpenSearch={() => router.push('/search')}
+        onOpenPlayer={(titleId) => router.push({ pathname: '/player/[titleId]', params: { titleId } })}
+        onOpenRail={(shelfKey, title) =>
+          router.push({ pathname: '/shelf', params: { shelfKey, title } })
+        }
+      />
     </SafeAreaView>
   );
 }

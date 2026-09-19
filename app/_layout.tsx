@@ -1,3 +1,7 @@
+import { ClientCapabilities } from '@/domain/model/player';
+import { ServiceLocator } from '@/di/serviceLocator';
+import { MusicPlayback } from '@/player/musicPlayback';
+import { MusicQueue } from '@/player/musicQueue';
 import { Stack } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as SplashScreen from 'expo-splash-screen';
@@ -7,6 +11,8 @@ import { View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { Ink, TowerTheme, useTowerFonts } from '@/theme';
+import { showTechnicalBadgesFlow } from '@/data/uiSettings';
+import { useFlow } from '@/ui/hooks';
 import { GoogleSignIn } from '@/auth/googleSignIn';
 import { SocialSignInProvider } from '@/auth/socialSignIn';
 
@@ -21,8 +27,54 @@ SplashScreen.preventAutoHideAsync().catch(() => {
   // failing a launch over.
 });
 
+/**
+ * What this device can play, for a track the queue reaches on its own.
+ *
+ * A fixed set rather than the player screen's, which reads a quality cap the
+ * user chose for video. A song has no resolution to cap, and the screen that
+ * holds that preference is not on screen when this runs.
+ */
+const MUSIC_CAPABILITIES: ClientCapabilities = {
+  deviceName: 'iPhone',
+  videoCodecs: ['h264', 'hevc'],
+  // No Dolby Digital here either, and for the same reason — see the player's
+  // own capabilities for the whole of it.
+  audioCodecs: ['aac', 'mp3', 'alac', 'flac'],
+  containers: ['mp4', 'mov', 'm4v', 'mp3', 'flac', 'm4a'],
+  maxHeight: null,
+  supportsHls: true,
+};
+
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useTowerFonts();
+  // Read here, at the root, because it governs every mono label in the app.
+  const showTechnicalBadges = useFlow(showTechnicalBadgesFlow);
+
+  /*
+   * The two things music needs that no screen can own.
+   *
+   * Installed here because both have to keep working with the player screen
+   * gone: a resume position that stops being recorded the moment somebody
+   * swipes down would be confidently wrong rather than merely absent, and a
+   * track ending in a pocket has no screen alive to start the next one.
+   */
+  useEffect(() => {
+    MusicPlayback.onProgress = (titleId, positionSeconds) => {
+      void ServiceLocator.repository.recordProgress(titleId, positionSeconds);
+    };
+    MusicQueue.install(async (track) => {
+      const repository = ServiceLocator.repository;
+      const decided = await repository.playbackDecision(track.id, MUSIC_CAPABILITIES, 0);
+      return {
+        titleId: track.id,
+        name: track.name,
+        artist: track.artist ?? null,
+        artworkUrl: track.posterUrl ?? null,
+        url: decided.url,
+        headers: decided.headers,
+      };
+    });
+  }, []);
 
   /*
    * The app is portrait; the player is the one screen that rotates, and it
@@ -51,7 +103,7 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <TowerTheme>
+      <TowerTheme showTechnicalBadges={showTechnicalBadges}>
         {/* Tower is dark-only, so the bars are light on every screen. */}
         <StatusBar style="light" />
         <View style={{ flex: 1, backgroundColor: Ink }}>

@@ -1,3 +1,5 @@
+import Animated from 'react-native-reanimated';
+import { useKeyboardPanel } from '@/ui/keyboardPanel';
 import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import {
@@ -73,7 +75,7 @@ export function CommentsSheet({ controller }: { controller: CommentsController }
  */
 export function CommentsOverlay({ controller }: { controller: CommentsController }) {
   const { height } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
+  const keyboard = useKeyboardPanel();
 
   return (
     <View style={StyleSheet.absoluteFill}>
@@ -83,10 +85,7 @@ export function CommentsOverlay({ controller }: { controller: CommentsController
        */}
       <Pressable style={StyleSheet.absoluteFill} onPress={controller.close} accessible={false} />
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={[styles.panel, { height: height * PANEL_HEIGHT, paddingBottom: insets.bottom }]}
-      >
+      <Animated.View style={[styles.panel, { height: height * PANEL_HEIGHT }, keyboard]}>
         {/*
          * Translucent, and graded rather than a flat wash. The film carries on
          * behind the panel, which is the point of putting it here at all; a
@@ -102,7 +101,7 @@ export function CommentsOverlay({ controller }: { controller: CommentsController
           style={StyleSheet.absoluteFill}
         />
         <CommentsBody controller={controller} />
-      </KeyboardAvoidingView>
+      </Animated.View>
     </View>
   );
 }

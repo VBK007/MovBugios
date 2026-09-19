@@ -1,5 +1,6 @@
 import { TowerApi } from '@/data/remote/towerApi';
 import {
+  PartyMessage,
   PartyClock,
   PartyClockState,
   PartyMember,
@@ -36,6 +37,17 @@ export type PartyEvent =
   | { type: 'ENDED'; reason: string | null }
   /** Something this client sent was refused. The socket stays open. */
   | { type: 'REFUSED'; message: string | null }
+  /**
+   * The party has moved to a different thing entirely.
+   *
+   * Not a seek: the playhead did not move inside something, the something
+   * changed, so this device has to open a new stream rather than jump.
+   */
+  | { type: 'ITEM_CHANGED'; mediaItemId: string; by: string | null }
+  /** Somebody in the party said something. Includes this device's own messages. */
+  | { type: 'CHAT'; message: PartyMessage }
+  /** What was said before this device connected, oldest first. */
+  | { type: 'CHAT_HISTORY'; messages: PartyMessage[] }
   /** The socket dropped. Not a server frame — raised locally. */
   | { type: 'DISCONNECTED'; cause: string | null };
 
@@ -60,6 +72,20 @@ interface PartyFrameDto {
   guest?: { requestId: string; name: string } | null;
   reason?: string | null;
   message?: string | null;
+  /** On an `item` frame: the track the party has moved to. */
+  mediaItemId?: string | null;
+  /** On a `chat` frame: the one thing just said. */
+  chatMessage?: PartyChatMessageDto | null;
+  /** On a `chat-history` frame: what was said before this client connected. */
+  messages?: PartyChatMessageDto[] | null;
+}
+
+/** One thing somebody said. Never stored anywhere, on either side. */
+interface PartyChatMessageDto {
+  id: string;
+  from: string;
+  text: string;
+  atEpochMs: number;
 }
 
 /**
@@ -135,13 +161,41 @@ export class PartySocket {
     this.send('report', positionSeconds, buffering);
   }
 
-  private send(type: string, positionSeconds: number | null, buffering: boolean | null) {
+  /**
+   * Says something to the party. Everyone may, unlike the controls above.
+   *
+   * Nothing is shown until the server echoes it back. That costs a round trip on
+   * a line already carrying the clock, and buys the one thing that matters in a
+   * shared room: everybody sees the same conversation in the same order, rather
+   * than each device seeing its own messages where it put them.
+   */
+  sendChat(text: string) {
+    this.send('chat', null, null, text);
+  }
+
+  /**
+   * Moves the party onto a different track. Host only; refused for anyone else.
+   *
+   * Sent when this device is already showing the new track, so the frame goes
+   * out once the change is real rather than while it is being attempted.
+   */
+  sendItem(mediaItemId: string) {
+    this.send('item', null, null, null, mediaItemId);
+  }
+
+  private send(
+    type: string,
+    positionSeconds: number | null,
+    buffering: boolean | null,
+    text: string | null = null,
+    mediaItemId: string | null = null,
+  ) {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     // Failing to send is not worth surfacing: the next report is a couple of
     // seconds away, and a dropped socket is already reported through `onclose`.
     try {
-      socket.send(JSON.stringify({ type, positionSeconds, buffering }));
+      socket.send(JSON.stringify({ type, positionSeconds, buffering, text, mediaItemId }));
     } catch {
       // As above.
     }
@@ -184,6 +238,14 @@ function toEvent(frame: PartyFrameDto): PartyEvent | null {
       };
     case 'pending':
       return frame.guest ? { type: 'PENDING', guest: frame.guest } : null;
+    case 'item':
+      return frame.mediaItemId
+        ? { type: 'ITEM_CHANGED', mediaItemId: frame.mediaItemId, by: frame.by ?? null }
+        : null;
+    case 'chat':
+      return frame.chatMessage ? { type: 'CHAT', message: frame.chatMessage } : null;
+    case 'chat-history':
+      return { type: 'CHAT_HISTORY', messages: frame.messages ?? [] };
     case 'ended':
       return { type: 'ENDED', reason: frame.reason ?? null };
     case 'error':

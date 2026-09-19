@@ -246,6 +246,24 @@ export interface Title {
   certification?: string | null;
   studio?: string | null;
   /**
+   * Who made it, for a music file.
+   *
+   * Null for everything else, and often null for music too — an MP3 with no
+   * tags is a filename and nothing more. The player says so rather than
+   * inventing an artist to fill the line.
+   */
+  artist?: string | null;
+  album?: string | null;
+  /** Its place on the record, where the tags carry one. */
+  trackNumber?: number | null;
+  /**
+   * What the file was tagged with, or null when nothing recorded it.
+   *
+   * Null is a real and common answer — most loose MP3s carry no language at
+   * all — so anything reading this has to mean "unknown" rather than "none".
+   */
+  language?: string | null;
+  /**
    * The title in its own language, when the catalogue holds both. Worth showing
    * for a library that is largely Tamil: a film indexed as "Gatta Kusthi 2" is
    * known to the people watching it by its Tamil name.

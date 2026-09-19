@@ -1,3 +1,26 @@
+import { Answer } from '@/domain/model/assistant';
+import { Teaser, TeaserPage } from '@/domain/model/teaser';
+import { CastMember } from '@/domain/model/people';
+import { TeaserClipDto } from '@/data/remote/dto';
+import { MusicHome } from '@/domain/model/musicHome';
+import {
+  answerToDomain,
+  musicHomeToDomain,
+  castMemberToDomain,
+  teaserToDomain,
+} from '@/data/remote/mappers';
+import {
+  Collections,
+  Recommendation,
+  SearchResults,
+} from '@/domain/model/collection';
+import { Language } from '@/domain/model/preferences';
+import {
+  collectionToDomain,
+  languagesToDomain,
+  recommendationToDomain,
+  searchResultToDomain,
+} from '@/data/remote/mappers';
 import { Flow, MutableStateFlow } from '@/data/store';
 import { CredentialStore } from '@/data/remote/credentialStore';
 import { AuthResponseDto } from '@/data/remote/dto';
@@ -82,7 +105,9 @@ function currentCapabilities() {
   return {
     containers: ['mp4', 'mov', 'm4v'],
     videoCodecs: ['h264', 'hevc'],
-    audioCodecs: ['aac', 'mp3', 'ac3', 'eac3'],
+    // No Dolby Digital: AVPlayer on an iPhone will not decode it, and claiming
+    // it here had the server direct-play films that then arrived silent.
+    audioCodecs: ['aac', 'mp3', 'alac', 'flac'],
     maxHeight: 2160,
   };
 }
@@ -333,6 +358,8 @@ export class RemoteTowerRepository implements TowerRepository {
         language: language && language !== '' ? language : null,
         genres,
         mobileQuality: capForHeight(dto.awayMaxHeight),
+        // The server holds this per profile, so a second device inherits it.
+        showTechnicalBadges: dto.showTechnicalBadges ?? true,
         completed: true,
       };
     } catch {
@@ -648,11 +675,183 @@ export class RemoteTowerRepository implements TowerRepository {
     });
   }
 
-  search(query: string): Promise<Title[]> {
+  /**
+   * The phrase, read by the server where it can be.
+   *
+   * Falls back to the plain title match on a server that has no
+   * `/api/media/search`. This is the one new endpoint that *replaced* a working
+   * one rather than adding to the app, so failing hard here would take
+   * away search itself from a server that is merely older — and the fallback
+   * loses only the chips, which a server that cannot parse a sentence was never
+   * going to send.
+   */
+  search(query: string): Promise<SearchResults> {
     return this.guarded(async () => {
-      const dto = await this.api.browse({ query, size: 60 });
+      try {
+        const dto = await this.api.smartSearch(query);
+        return searchResultToDomain(dto, this.baseUrl());
+      } catch (error) {
+        if (!(error instanceof TowerHttpError) || !error.missingEndpoint) throw error;
+        const page = await this.api.browse({ query, size: 60 });
+        return {
+          titles: (page.items ?? []).map((i) => summaryToTitle(i, this.baseUrl())),
+          terms: [],
+          // Not a claim about the phrase — this server has no grammar to have
+          // read it with, so the screen must not say the words were taken
+          // literally as though that were a finding.
+          understoodNothing: false,
+          readByModel: false,
+        };
+      }
+    });
+  }
+
+  /**
+   * Not [guarded]: this decorates a question rather than answering one, and a
+   * server that cannot say should leave the first-run screen showing its usual
+   * list instead of failing the step.
+   */
+  async libraryLanguages(): Promise<Language[]> {
+    try {
+      return languagesToDomain(await this.api.languages());
+    } catch {
+      return [];
+    }
+  }
+
+/**
+   * False for anything that goes wrong, including an older server with no such
+   * endpoint at all. The only consumer of this hides a text box, so a failure to
+   * answer and a "no" want exactly the same handling.
+   */
+  async assistantAvailable(): Promise<boolean> {
+    try {
+      return (await this.api.assistantAvailable()).available ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The one repository method that swallows its own failure into a value.
+   *
+   * Everywhere else, unreachable is a state a screen renders. Here the server
+   * has already decided that a question always gets prose back rather than an
+   * error, and a transport failure is the same shape of thing — so it becomes an
+   * unanswered `Answer` instead of an exception the screen would have to
+   * translate into a sentence anyway.
+   */
+  async ask(question: string): Promise<Answer> {
+    try {
+      return answerToDomain(await this.api.ask(question));
+    } catch {
+      return {
+        text:
+          'Tower could not be reached to ask that. It may be asleep, or the ' +
+          'question may have taken too long.',
+        lookups: [],
+        answered: false,
+      };
+    }
+  }
+
+  teaserFeed(page = 0, seed?: number | null): Promise<TeaserPage> {
+    return this.guarded(async () => {
+      const dto = await this.api.teaserFeed(page, 10, seed);
+      return {
+        teasers: this.playableTeasers(dto.items ?? []),
+        // Zero is the default an older server leaves behind, and is not a seed
+        // it would honour — treated as "did not say" so the client stops passing
+        // one rather than pinning every page to deal zero.
+        seed: dto.seed != null && dto.seed !== 0 ? dto.seed : null,
+      };
+    });
+  }
+
+  async cast(titleId: string): Promise<CastMember[]> {
+    try {
+      const dtos = await this.api.cast(titleId);
+      return dtos.flatMap((dto) => {
+        const member = castMemberToDomain(dto, this.baseUrl());
+        return member == null ? [] : [member];
+      });
+    } catch {
+      // A rail of initials is what this screen drew before there were photos at
+      // all, and is the right answer when the lookup is unavailable.
+      return [];
+    }
+  }
+
+  /**
+   * Empty rather than a failure when the server has no teasers at all. Older
+   * builds 404 here, and a detail screen that shows an error where it could show
+   * nothing is a regression for every library that never cut a clip.
+   */
+  async teasers(titleId: string): Promise<Teaser[]> {
+    try {
+      return this.playableTeasers(await this.api.teasers(titleId));
+    } catch {
+      return [];
+    }
+  }
+
+  async trackPreview(titleId: string): Promise<PlaybackSource | null> {
+    const base = this.baseUrl();
+    if (base == null || base.trim() === '') return null;
+    return {
+      url: `${base}/api/media/items/${encodeURIComponent(titleId)}/preview`,
+      sessionId: null,
+      // Always direct: twenty seconds of audio is never worth transcoding, and
+      // the server does not offer a decision for it.
+      plan: { type: 'DIRECT_PLAY', reasons: [] },
+      headers: this.api.streamHeaders(),
+      startSeconds: 0,
+    };
+  }
+
+  /** Drops the unplayable ones and gives the rest the token they need. */
+  private playableTeasers(dtos: TeaserClipDto[]): Teaser[] {
+    const headers = this.api.streamHeaders();
+    return dtos.flatMap((dto) => {
+      const teaser = teaserToDomain(dto, this.baseUrl());
+      return teaser == null ? [] : [{ ...teaser, headers }];
+    });
+  }
+
+    musicHome(limit = 20): Promise<MusicHome> {
+    return this.guarded(async () => musicHomeToDomain(await this.api.musicHome(limit), this.baseUrl()));
+  }
+
+  collections(): Promise<Collections> {
+    return this.guarded(async () => {
+      const list = await this.api.collections();
+      return {
+        builtin: (list.builtin ?? []).map((c) => collectionToDomain(c, 'BUILTIN')),
+        custom: (list.custom ?? []).map((c) => collectionToDomain(c, 'CUSTOM')),
+        discovered: (list.discovered ?? []).map((c) => collectionToDomain(c, 'DISCOVERED')),
+      };
+    });
+  }
+
+  collectionItems(id: string, page = 0): Promise<Title[]> {
+    return this.guarded(async () => {
+      const dto = await this.api.collectionItems(id, page);
       return (dto.items ?? []).map((i) => summaryToTitle(i, this.baseUrl()));
     });
+  }
+
+  /**
+   * Not [guarded]: a home rail that cannot be filled should be absent, not an
+   * error. Every other rail on that screen already works this way — a server
+   * having nothing to recommend is not a reason to fail the whole shelf.
+   */
+  async recommendations(limit = 20): Promise<Recommendation[]> {
+    try {
+      const dto = await this.api.recommendations(limit);
+      return (dto.items ?? []).map((r) => recommendationToDomain(r, this.baseUrl()));
+    } catch {
+      return [];
+    }
   }
 
   /**

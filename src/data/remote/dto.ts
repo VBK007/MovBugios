@@ -56,6 +56,8 @@ export interface ItemSummaryDto {
   capturedAt?: string | null;
   artist?: string | null;
   album?: string | null;
+  trackNumber?: number | null;
+  language?: string | null;
 }
 
 /** `CatalogDtos.MediaInfoDto` — what ffprobe found inside the container. */
@@ -128,6 +130,10 @@ export interface ItemDetailDto {
   audioTracks?: AudioTrackDto[];
   resumePositionSeconds?: number | null;
   watched?: boolean;
+  artist?: string | null;
+  album?: string | null;
+  trackNumber?: number | null;
+  language?: string | null;
 }
 
 export interface ItemPageDto {
@@ -335,4 +341,253 @@ export interface MediaSettingsDto {
   showTechnicalBadges?: boolean;
   preferredLanguage?: string | null;
   preferredGenres?: string[];
+}
+
+/** `CatalogDtos.LanguageDto` — one language the library holds. */
+export interface LanguageDto {
+  code: string;
+  /** Already in English; the server owns the ISO table so clients need not. */
+  name?: string | null;
+}
+
+/**
+ * `CollectionDtos.CollectionDto` — a saved search with a name on it.
+ *
+ * `query` is deliberately absent. The server sends it so a client can show a
+ * collection as removable chips or copy it into a new one, and that is worth
+ * having — but this build only *reads* collections, and a field parsed into a
+ * type nothing uses is a schema to keep in step for no benefit.
+ */
+export interface CollectionDto {
+  id: string;
+  /** `BUILTIN`, `CUSTOM` or `DISCOVERED`. Unknown values are ignored, not fatal. */
+  kind?: string | null;
+  name?: string | null;
+  icon?: string | null;
+  pinned?: boolean;
+  /** Matches right now — a collection is a live query, so this moves. */
+  itemCount?: number;
+}
+
+/** Split by kind server-side, so the screen renders three sections without grouping. */
+export interface CollectionListDto {
+  builtin?: CollectionDto[];
+  custom?: CollectionDto[];
+  discovered?: CollectionDto[];
+}
+
+/**
+ * `RecommendationDtos.RecommendationDto` — one pick, with its reasoning.
+ *
+ * The three component scores are carried because the server computes them and
+ * they are what a "why this?" explanation would be built from. Nothing shows
+ * them yet; `reason` is the sentence a poster subtitle wants.
+ */
+export interface RecommendationDto {
+  item: ItemSummaryDto;
+  score?: number;
+  /** `Because you watched Kaithi`, or absent when there is no evidence to name. */
+  reason?: string | null;
+  taste?: number;
+  quality?: number;
+  freshness?: number;
+}
+
+export interface RecommendationsDto {
+  items?: RecommendationDto[];
+  /**
+   * What the server believes this profile likes.
+   *
+   * Returned so somebody can see where it is wrong. Not read yet — the rail
+   * shows picks, and a taste profile is a screen of its own.
+   */
+  taste?: TasteFacetDto[];
+  /** How many watched titles the taste was built from. */
+  basedOn?: number;
+  /** True when there is no history at all: quality and freshness only. */
+  coldStart?: boolean;
+}
+
+export interface TasteFacetDto {
+  kind?: string | null;
+  value?: string | null;
+  weight?: number;
+  evidence?: string | null;
+}
+
+/**
+ * One thing the server read out of a search phrase.
+ *
+ * `matched` is the words it was consumed from, so a chip can say what it came
+ * from rather than only what it became.
+ */
+export interface SearchTermDto {
+  field?: string | null;
+  value?: string | null;
+  label?: string | null;
+  matched?: string | null;
+}
+
+/**
+ * `SearchDtos.SearchResultDto`.
+ *
+ * `query_text` is snake_case on the wire — the one field in this API that is,
+ * so it is named explicitly rather than left to a global naming convention that
+ * would then have to be right about every other field too.
+ */
+export interface SearchResultDto {
+  query_text?: string | null;
+  terms?: SearchTermDto[];
+  /** True when no rule matched. Says nothing about what happened next — see `interpretedBy`. */
+  understoodNothing?: boolean;
+  /**
+   * `rules` or `model`.
+   *
+   * Only the rules parser reads a sentence span by span, so only it can say
+   * which words became which filter. When a model took over, the server sends
+   * no `terms` at all — and `understoodNothing` is still true, because it
+   * records what the *rules* made of the phrase. Read together or the client
+   * will tell somebody their sentence was ignored when it was in fact
+   * understood by something else.
+   */
+  interpretedBy?: string | null;
+  results?: ItemPageDto | null;
+}
+
+export interface AssistantAvailabilityDto {
+  available?: boolean;
+}
+
+export interface AssistantRequestDto {
+  question: string;
+}
+
+/**
+ * One lookup the assistant made on the way to its answer.
+ *
+ * `arguments` stays as raw JSON. The server types it `Map<String, Object>` —
+ * the values are whatever filter the model chose, so numbers, strings and
+ * booleans all appear — and the client only ever prints them. Parsing them into
+ * a union would be a schema to maintain in step with a tool surface that belongs
+ * to the server, for no gain over reading them out as text.
+ */
+export interface ToolCallDto {
+  tool?: string | null;
+  arguments?: Record<string, unknown>;
+  /** The tool errored. The assistant was told and may have recovered, so not fatal. */
+  failed?: boolean;
+}
+
+/**
+ * `AssistantDtos.AssistantAnswerDto`.
+ *
+ * `toolCalls` is the point as much as `answer` is. An assistant that will not
+ * say what it looked at is one nobody can check.
+ */
+export interface AssistantAnswerDto {
+  answer?: string | null;
+  toolCalls?: ToolCallDto[];
+  /**
+   * False when it gave up, was switched off, or could not be reached. The text
+   * is still worth showing either way — this only decides whether to offer a
+   * retry.
+   */
+  answered?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// `TeaserClipDtos` — short vertical clips cut from a film's own file.
+//
+// An admin picks the moment and the crop; the server encodes it with ffmpeg as
+// a background job. This client only ever reads published, finished ones, so
+// most of the admin-facing shape below is parsed and ignored — it is here
+// because `state` and `error` are what explain a clip that has no file yet.
+// ---------------------------------------------------------------------------
+
+export interface TeaserClipDto {
+  id: string;
+  mediaItemId?: string | null;
+  /** The film it was cut from, so the feed can name it without a second call. */
+  itemTitle?: string | null;
+  /** `QUEUED`, `GENERATING`, `READY` or `FAILED`. */
+  state?: string | null;
+  startSeconds?: number;
+  endSeconds?: number;
+  durationSeconds?: number;
+  horizontalOffset?: number;
+  /** What the cut is of — "the chase", "the reveal". Optional and often absent. */
+  label?: string | null;
+  published?: boolean;
+  /** Server-relative, and null until the clip is READY. No file, nothing to play. */
+  fileUrl?: string | null;
+  width?: number | null;
+  height?: number | null;
+  bytes?: number | null;
+  error?: string | null;
+  createdAt?: string | null;
+}
+
+/**
+ * `CastPhotoDtos.CastMemberDto` — a billed name, and a face where one was found.
+ *
+ * `photoUrl` is server-relative and null until the server has fetched and cached
+ * one. Null is the ordinary case, not a failure: nothing in the catalogue gives a
+ * cast member an identity beyond their name in a comma-separated string, so the
+ * photo is looked up by a slug of that name and may simply not resolve.
+ */
+export interface CastMemberDto {
+  name?: string | null;
+  photoUrl?: string | null;
+}
+
+export interface TeaserFeedPageDto {
+  items?: TeaserClipDto[];
+  /**
+   * The shuffle this page was dealt from.
+   *
+   * Hand it back on every later page of the same scroll — without it the server
+   * deals page two from a fresh shuffle, which repeats clips already seen and
+   * skips others entirely.
+   *
+   * Defaulted for an older server that sends none: zero means "did not say", and
+   * the client then simply does not pass one back.
+   */
+  seed?: number;
+  page?: number;
+  size?: number;
+  totalItems?: number;
+  totalPages?: number;
+}
+
+// ---------------------------------------------------------------------------
+// The music tab's own home screen.
+//
+// Browse-by-facet rather than the film home's popularity blend: a few hundred
+// songs on a disk have no meaningful play-count ranking, so what this offers is
+// ways *in* to a collection rather than a judgement about which track is best.
+// ---------------------------------------------------------------------------
+
+/** `HomeDtos.HomeItemDto` — a tile, with the reasoning a ranked rail would carry. */
+export interface HomeItemDto {
+  item: ItemSummaryDto;
+  score?: number | null;
+  reason?: string | null;
+}
+
+/**
+ * `HomeDtos.HomeRailDto` — one horizontal row.
+ *
+ * `key` is stable and structured: `mood:calm`, `era:1990`, `director:Ilaiyaraaja`.
+ * Worth keeping rather than flattening to the title, because it is what a row is
+ * keyed on and what opening the shelf is built from.
+ */
+export interface HomeRailDto {
+  key?: string | null;
+  title?: string | null;
+  items?: HomeItemDto[];
+}
+
+export interface MusicHomeDto {
+  continueListening?: ItemSummaryDto[];
+  rails?: HomeRailDto[];
 }

@@ -96,11 +96,20 @@ export function DataMeta({
   text,
   color = OnInkFaint,
   technical = true,
+  /**
+   * One line suits a measurement — `720P · 2H 36M` is never longer.
+   *
+   * Two is for a sentence: a recommendation's reason is the reason the rail
+   * exists, and "Because you watch…" truncated at the first line says nothing
+   * at all.
+   */
+  maxLines = 1,
   style,
 }: {
   text: string;
   color?: string;
   technical?: boolean;
+  maxLines?: number;
   style?: StyleProp<ViewStyle>;
 }) {
   const showBadges = useShowTechnicalBadges();
@@ -109,7 +118,7 @@ export function DataMeta({
   return (
     <Text
       style={[TowerType.dataMeta, { color }, style as never]}
-      numberOfLines={1}
+      numberOfLines={maxLines}
       ellipsizeMode="tail"
     >
       {text}

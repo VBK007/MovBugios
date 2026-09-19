@@ -1,6 +1,6 @@
 import React from 'react';
 import { View } from 'react-native';
-import Svg, { Circle, Line, Path, Polyline } from 'react-native-svg';
+import Svg, { Circle, Line, Path, Polyline, Rect } from 'react-native-svg';
 
 import { OnInk } from '@/theme';
 
@@ -369,6 +369,208 @@ export function PlusGlyph({ color = OnInk, size = 16 }: { color?: string; size?:
     <Glyph size={size}>
       <Line x1={50} y1={22} x2={50} y2={78} stroke={color} strokeWidth={10} strokeLinecap="round" />
       <Line x1={22} y1={50} x2={78} y2={50} stroke={color} strokeWidth={10} strokeLinecap="round" />
+    </Glyph>
+  );
+}
+
+// --- The four bottom-bar marks ---------------------------------------------
+//
+// Outlines, not fills, and the same 0.09–0.10 stroke as the rest of the set: at
+// 20dp a filled shape reads as a blob, and these sit under a 9.5sp label that is
+// already carrying the meaning. Selection is the amber, not a second weight —
+// swapping outline for fill on selection would make the row jump.
+
+/** A roof over a box. The shelf you land on. */
+export function HomeGlyph({ color = OnInk, size = 20 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      <Path
+        d="M14 46 L50 16 L86 46"
+        stroke={color}
+        strokeWidth={9.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      {/* Walls drawn from under the eaves down, so the roof line stays the
+          widest thing and the house does not read as an envelope. */}
+      <Path
+        d="M24 44 L24 82 L76 82 L76 44"
+        stroke={color}
+        strokeWidth={9.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Glyph>
+  );
+}
+
+/**
+ * Three spines on a shelf, the last one leaning.
+ *
+ * A grid of squares is the usual choice and says "gallery" — this library is
+ * films filed like books, and the lean is what stops three bars reading as a
+ * hamburger menu turned on its side.
+ */
+export function LibraryGlyph({ color = OnInk, size = 20 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      <Line x1={22} y1={18} x2={22} y2={82} stroke={color} strokeWidth={10.5} strokeLinecap="round" />
+      <Line x1={45} y1={18} x2={45} y2={82} stroke={color} strokeWidth={10.5} strokeLinecap="round" />
+      {/* The leaning spine: top edge pushed right, foot left. */}
+      <Line x1={78} y1={18} x2={66} y2={82} stroke={color} strokeWidth={10.5} strokeLinecap="round" />
+    </Glyph>
+  );
+}
+
+/** The plus, turned. Removes the thing it sits inside rather than the screen. */
+export function CloseGlyph({ color = OnInk, size = 12 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      <Line x1={24} y1={24} x2={76} y2={76} stroke={color} strokeWidth={12} strokeLinecap="round" />
+      <Line x1={76} y1={24} x2={24} y2={76} stroke={color} strokeWidth={12} strokeLinecap="round" />
+    </Glyph>
+  );
+}
+
+/**
+ * A heart, hollow until it means something.
+ *
+ * Filled rather than merely tinted when liked: at a glance on a moving picture,
+ * colour alone is not reliably readable, and the fill is what makes a liked clip
+ * obvious without looking twice.
+ */
+export function HeartGlyph({
+  color = OnInk,
+  size = 20,
+  filled = false,
+}: {
+  color?: string;
+  size?: number;
+  filled?: boolean;
+}) {
+  const d =
+    'M50 86 C14 60 5 40 18 26 C31 12 44 20 50 33 C56 20 69 12 82 26 C95 40 86 60 50 86 Z';
+  return (
+    <Glyph size={size}>
+      <Path
+        d={d}
+        fill={filled ? color : 'none'}
+        stroke={filled ? 'none' : color}
+        strokeWidth={9}
+        strokeLinejoin="round"
+      />
+    </Glyph>
+  );
+}
+
+/** A tall frame with a play mark in it. A film, turned on its side. */
+export function ShortsGlyph({ color = OnInk, size = 20 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      <Rect
+        x={26}
+        y={13}
+        width={48}
+        height={74}
+        rx={9}
+        ry={9}
+        fill="none"
+        stroke={color}
+        strokeWidth={9}
+        strokeLinejoin="round"
+      />
+      {/* Filled, unlike the frame: at 20dp an outlined triangle inside an
+          outlined box is two thin shapes fighting for the same few pixels. */}
+      <Path d="M43 36 L63 50 L43 64 Z" fill={color} />
+    </Glyph>
+  );
+}
+
+/**
+ * Three lines and a play mark: what is queued behind this one.
+ *
+ * The lines shorten going down, which is the difference between reading as a
+ * list and reading as a hamburger menu — three equal bars is a navigation drawer
+ * everywhere else on a phone.
+ */
+export function QueueGlyph({ color = OnInk, size = 18 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      {([
+        [22, 80],
+        [45, 80],
+        [68, 52],
+      ] as const).map(([y, end]) => (
+        <Line
+          key={y}
+          x1={12}
+          y1={y}
+          x2={end}
+          y2={y}
+          stroke={color}
+          strokeWidth={9.5}
+          strokeLinecap="round"
+        />
+      ))}
+      {/* The mark that says the list is a queue rather than a menu. */}
+      <Path d="M62 56 L90 70 L62 84 Z" fill={color} />
+    </Glyph>
+  );
+}
+
+/**
+ * Two crossing paths with arrowheads — the shuffle mark everything uses.
+ *
+ * Drawn rather than borrowed so it carries the same stroke and cap as the rest
+ * of the set; an imported icon here would be the one shape in the app with
+ * somebody else's line weight.
+ */
+export function ShuffleGlyph({ color = OnInk, size = 16 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      <Path
+        d="M12 26 L34 26 L66 74 L88 74"
+        stroke={color}
+        strokeWidth={9}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <Path
+        d="M12 74 L34 74 L66 26 L88 26"
+        stroke={color}
+        strokeWidth={9}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <Path d="M76 14 L92 26 L76 38 Z" fill={color} />
+      <Path d="M76 62 L92 74 L76 86 Z" fill={color} />
+    </Glyph>
+  );
+}
+
+/**
+ * An eye — who else is listening to this.
+ *
+ * Two arcs and a pupil rather than a lens or a person: a count of people beside
+ * a person glyph reads as a member list, and this is a live answer to "is anyone
+ * still here", which is a different question from "who was invited".
+ */
+export function EyeGlyph({ color = OnInk, size = 18 }: { color?: string; size?: number }) {
+  return (
+    <Glyph size={size}>
+      {/* The outline, as two arcs meeting at the corners. */}
+      <Path
+        d="M6 50 Q50 10 94 50 Q50 90 6 50 Z"
+        fill="none"
+        stroke={color}
+        strokeWidth={8.5}
+        strokeLinejoin="round"
+      />
+      <Circle cx={50} cy={50} r={15} fill={color} />
     </Glyph>
   );
 }
