@@ -17,6 +17,8 @@ import {
   ItemSummaryDto,
   LibrarySummaryDto,
   ProfileDto,
+  PublicItemDetailDto,
+  PublicItemPageDto,
   TimelineDto,
   CommentDto,
   CommentPageDto,
@@ -519,6 +521,37 @@ export class TowerApi {
 
   detail(id: string): Promise<ItemDetailDto> {
     return this.getJson<ItemDetailDto>(`/api/media/items/${id}`);
+  }
+
+  /**
+   * The same browse, for a visitor with no account.
+   *
+   * Public: no token is sent because a guest holds none, and the server does not
+   * expect one on this path. Note what the signature drops — `unwatched` and
+   * `minHeight` are per-profile and per-device questions, and there is nobody to
+   * ask them about.
+   */
+  publicBrowse(options: {
+    category?: string;
+    query?: string | null;
+    genre?: string | null;
+    sort?: string;
+    page?: number;
+    size?: number;
+  } = {}): Promise<PublicItemPageDto> {
+    return this.getJson<PublicItemPageDto>('/api/media/public/items', {
+      category: options.category ?? 'all',
+      q: options.query ?? undefined,
+      genre: options.genre ?? undefined,
+      sort: options.sort ?? 'title',
+      page: options.page ?? 0,
+      size: options.size ?? 40,
+    });
+  }
+
+  /** `detail` for a visitor with no account. Public — no token. */
+  publicDetail(id: string): Promise<PublicItemDetailDto> {
+    return this.getJson<PublicItemDetailDto>(`/api/media/public/items/${id}`);
   }
 
   recentlyAdded(types?: string | null, limit = 20): Promise<ItemSummaryDto[]> {

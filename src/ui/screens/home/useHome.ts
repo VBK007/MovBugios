@@ -3,10 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Title } from '@/domain/model/media';
 import { Recommendation } from '@/domain/model/collection';
-import { DefaultLibraryFilters } from '@/domain/model/library';
+import { DefaultLibraryFilters, LibraryFilters } from '@/domain/model/library';
 import { ServerState } from '@/domain/model/server';
 import { Loading, ServerAsleepError, UiState, dataOrNull, empty, loaded, offline } from '@/ui/uiState';
-import { useActiveProfileId, useFlow, useRepository } from '@/ui/hooks';
+import { useActiveProfileId, useFlow, useIsGuest, useRepository } from '@/ui/hooks';
 import { RecentArt } from '@/data/remote/recentArt';
 
 export interface HomeContent {
@@ -32,6 +32,26 @@ export interface HomeContent {
    */
   music: Title[];
   musicHeading: string;
+  /**
+   * What a signed-out visitor gets instead of the rails that need a profile.
+   *
+   * Home is mostly personal — continue watching, what we think you would like,
+   * the music you stopped halfway through — and every one of those is a 403
+   * without a session. That left a visitor two rails on an otherwise empty
+   * screen, which reads as a library with nothing in it rather than one they
+   * have not signed into.
+   *
+   * These are plain category browses through the public endpoint: what is on the
+   * disk, grouped the way the Library tab groups it. Nothing personal, because
+   * there is nobody to be personal about.
+   */
+  guestRails: HomeRail[];
+}
+
+/** One titled row on Home. Named so several can be added without a field each. */
+export interface HomeRail {
+  heading: string;
+  titles: Title[];
 }
 
 function isEmptyContent(c: HomeContent): boolean {
@@ -41,9 +61,40 @@ function isEmptyContent(c: HomeContent): boolean {
     c.recentlyAdded.length === 0 &&
     c.topRated.length === 0 &&
     c.fromCameraRoll.length === 0 &&
-    c.music.length === 0
+    c.music.length === 0 &&
+    c.guestRails.length === 0
   );
 }
+
+/** How many tiles a guest rail carries. A rail is a glance, not a page. */
+const GUEST_RAIL_SIZE = 12;
+
+/**
+ * The rows a signed-out visitor sees, in the order they appear.
+ *
+ * Categories rather than anything computed, because everything computed needs a
+ * profile: what somebody watched, liked or stopped halfway. These say only what
+ * is on the disk, which is the whole of what a visitor is allowed to know and is
+ * enough to show the library is not empty.
+ *
+ * Films first — it is the largest shelf in most houses and the one somebody
+ * browsing without an account is most likely looking for. Photos last: they are
+ * the household's own, and least likely to be what brought a visitor here.
+ */
+const GUEST_RAILS: { heading: string; filters: LibraryFilters }[] = [
+  {
+    heading: 'Most watched films',
+    filters: { ...DefaultLibraryFilters, category: 'FILM', sort: 'VIEWS' },
+  },
+  { heading: 'Films', filters: { ...DefaultLibraryFilters, category: 'FILM' } },
+  { heading: 'Anime', filters: { ...DefaultLibraryFilters, category: 'ANIME' } },
+  {
+    heading: 'Most played music',
+    filters: { ...DefaultLibraryFilters, category: 'MUSIC', sort: 'VIEWS' },
+  },
+  { heading: 'Music', filters: { ...DefaultLibraryFilters, category: 'MUSIC' } },
+  { heading: 'Photos', filters: { ...DefaultLibraryFilters, category: 'PHOTO' } },
+];
 
 type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
@@ -71,6 +122,9 @@ export function useHome() {
   const serverState = useFlow(repository.serverState);
   const profile = useFlow(repository.activeProfile);
   const profileId = useActiveProfileId();
+  // A dependency of the load, not just a question asked during it: signing in
+  // and signing out change which half of Home can be filled at all.
+  const isGuest = useIsGuest();
 
   const [content, setContent] = useState<UiState<HomeContent>>(Loading);
   const [refreshing, setRefreshing] = useState(false);
@@ -102,19 +156,51 @@ export function useHome() {
       setContent(Loading);
     }
 
-    const [continueWatching, forYou, recentlyAdded, topRated, cameraRoll, music] =
-      await Promise.all([
-      attempt(() => repository.continueWatching()),
-      attempt(() => repository.recommendations(12)),
-      attempt(() => repository.recentlyAdded()),
-      attempt(() => repository.topRated(12)),
-      attempt(() => cameraRollTitles(repository)),
-      attempt(() => homeMusicShelf(repository)),
+    /*
+     * Only for a visitor. A signed-in Home already has rails about them, and
+     * these would push those down with rows the Library tab exists to show.
+     */
+    const guest = isGuest;
+
+    const [
+      [continueWatching, forYou, recentlyAdded, topRated, cameraRoll, music],
+      guestRailResults,
+    ] = await Promise.all([
+      Promise.all([
+        attempt(() => repository.continueWatching()),
+        attempt(() => repository.recommendations(12)),
+        attempt(() => repository.recentlyAdded()),
+        attempt(() => repository.topRated(12)),
+        attempt(() => cameraRollTitles(repository)),
+        attempt(() => homeMusicShelf(repository)),
+      ]),
+      Promise.all(
+        guest
+          ? GUEST_RAILS.map(async ({ heading, filters }) => ({
+              heading,
+              result: await attempt(() =>
+                repository.browse(filters, 0).then((t) => t.slice(0, GUEST_RAIL_SIZE)),
+              ),
+            }))
+          : [],
+      ),
     ]);
 
     if (!alive.current || run !== sequence.current) return;
 
-    const results = [continueWatching, forYou, recentlyAdded, topRated, cameraRoll, music];
+    const results = [
+      continueWatching,
+      forYou,
+      recentlyAdded,
+      topRated,
+      cameraRoll,
+      music,
+      // A guest's rails count here too, and they are usually the only ones that
+      // can. Every personal rail above answers 403 without a session, so judging
+      // reachability on those alone would put "We cannot reach Tower" over six
+      // rows of a library that had just answered.
+      ...guestRailResults.map((r) => r.result),
+    ];
     const anySucceeded = results.some((r) => r.ok);
 
     const next: HomeContent = {
@@ -125,6 +211,15 @@ export function useHome() {
       fromCameraRoll: cameraRoll.ok ? cameraRoll.value : [],
       music: music.ok ? music.value.tracks : [],
       musicHeading: music.ok ? music.value.heading : 'Music',
+      // Empty rows are dropped rather than drawn as headings over nothing — a
+      // library with no anime should not say "Anime" and show a gap, and the
+      // music row is empty exactly whenever the disk holding it is not mounted.
+      guestRails: guestRailResults
+        .filter((r) => r.result.ok && r.result.value.length > 0)
+        .map(({ heading, result }) => ({
+          heading,
+          titles: (result as { ok: true; value: Title[] }).value,
+        })),
     };
 
     if (!anySucceeded) {
@@ -152,7 +247,7 @@ export function useHome() {
       .filter((url): url is string => url != null);
     if (art.length > 0) void RecentArt.save(art);
     // Keyed on the profile too: every rail is per-person server-side.
-  }, [repository, profileId]);
+  }, [repository, profileId, isGuest]);
 
   // Load once, unconditionally. Waiting for a particular server state left the
   // screen on its skeleton forever whenever the state was anything else — being

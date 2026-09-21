@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { PreferencesStore } from '@/data/remote/preferencesStore';
 import { RecentArt } from '@/data/remote/recentArt';
 import { UiSettings } from '@/data/uiSettings';
-import { ServiceLocator } from '@/di/serviceLocator';
+import { DEFAULT_BASE_URL, ServiceLocator } from '@/di/serviceLocator';
 import { OnboardingScreen } from '@/ui/screens/onboarding/OnboardingScreen';
 import { SplashScreen } from '@/ui/screens/splash/SplashScreen';
 
@@ -77,8 +77,25 @@ export default function Index() {
       } catch {
         restored = false;
       }
-      if (restored) ServiceLocator.useRemote();
-      else ServiceLocator.useSampleData();
+      /*
+       * Signed in, or merely knowing where the server is, both land on the real
+       * catalogue. `restoreSession` sets the address even when it finds no token,
+       * so a visitor is usually in the second case: an address from the store, or
+       * from the directory, or baked into this build.
+       *
+       * The sample library is the last resort, for the one case where no address
+       * is known at all — which is a fresh install of a build with no default,
+       * before anybody has typed one. Everything else browses the house.
+       */
+      const address = ServiceLocator.session.baseUrl.get() ?? DEFAULT_BASE_URL;
+      if (restored) {
+        ServiceLocator.useRemote();
+      } else if (address !== '' && address != null) {
+        ServiceLocator.session.setBaseUrl(address);
+        ServiceLocator.useRemote();
+      } else {
+        ServiceLocator.useSampleData();
+      }
 
       let asked = true;
       try {
@@ -117,7 +134,7 @@ export default function Index() {
       if (!alive.current) return;
 
       /*
-       * Home either way. A signed-out visitor lands on the sample shelf and can
+       * Home either way. A signed-out visitor lands on the real library and can
        * browse freely; signing in is asked for at the point it is actually
        * needed — pressing play — rather than as a toll gate before anyone has
        * seen what the app is.

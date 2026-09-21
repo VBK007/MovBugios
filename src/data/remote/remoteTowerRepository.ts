@@ -37,6 +37,8 @@ import {
   partyToDomain,
   playerStateToDomain,
   profileToDomain,
+  publicDetailToTitle,
+  publicSummaryToTitle,
   summaryToTitle,
   timelineToDomain,
 } from '@/data/remote/mappers';
@@ -55,6 +57,7 @@ import {
   sessionsToDomain,
 } from '@/data/remote/adminMappers';
 import { deviceId } from '@/data/remote/deviceIdentity';
+import { RecentArt } from '@/data/remote/recentArt';
 import {
   ClientCapabilities,
   PlaybackSource,
@@ -65,6 +68,7 @@ import { CredentialKeys, TowerSession } from '@/data/remote/towerSession';
 import { lookupPublishedBaseUrl } from '@/data/remote/serverDirectory';
 import { EmptySavedSummary, SavedItem, SavedSummary } from '@/domain/model/downloads';
 import {
+  EmptyLibrarySummary,
   JumpTarget,
   LibraryFilters,
   LibrarySortMeta,
@@ -94,6 +98,15 @@ import { ServerAsleepError } from '@/ui/uiState';
  * is the only marker the server gives.
  */
 const DIRECT_PLAY_PREFIX = 'direct play';
+
+/**
+ * How many results a signed-out search asks for.
+ *
+ * One page and no paging. The parsed search a signed-in user gets returns a
+ * considered set rather than everything that matches, and a visitor scrolling
+ * to the four-hundredth title containing "a" is not browsing, it is waiting.
+ */
+const GUEST_SEARCH_PAGE_SIZE = 60;
 
 /**
  * What this device can decode, sent so the server can decide how to send a file.
@@ -367,12 +380,28 @@ export class RemoteTowerRepository implements TowerRepository {
     await CredentialStore.write(CredentialKeys.profileId, profileId);
   }
 
+  /**
+   * Gives up the account and keeps the house.
+   *
+   * The address survives, in the session and on disk. It used to be wiped along
+   * with everything else, which made signing out the same as forgetting where
+   * the server is: the next launch had nothing to browse and fell back to the
+   * sample library, and signing back in meant finding the address again. A
+   * visitor is allowed the public catalogue, and that needs an address.
+   *
+   * Everything that identifies a person does go: the tokens, the profile, the
+   * admin key, and the splash montage — that artwork is the last account's
+   * library, and showing it to whoever signs in next would leak what they watch.
+   */
   async signOut(): Promise<void> {
     this.session.clear();
-    this.session.setBaseUrl(null);
     for (const key of Object.values(CredentialKeys)) {
+      if (key === CredentialKeys.baseUrl) continue;
       await CredentialStore.write(key, null);
     }
+    await RecentArt.clear();
+    this._profiles.set([]);
+    this._activeProfile.set(null);
   }
 
   // --- Per-profile settings ----------------------------------------------
@@ -622,11 +651,38 @@ export class RemoteTowerRepository implements TowerRepository {
   // --- Browsing ----------------------------------------------------------
 
   librarySummary(): Promise<LibrarySummary> {
-    return this.guarded(async () => librarySummaryToDomain(await this.api.librarySummary()));
+    return this.guarded(async () => {
+      if (!this.session.isAuthenticated) {
+        /*
+         * `/api/media/library-summary` counts bytes on the disk and lists the
+         * categories a profile may see, so it needs one. The public browse
+         * reports `totalItems` for a query, which is the count and nothing else
+         * — so a visitor gets "1448 TITLES" rather than a header that fails to
+         * load. `libraryMonoLine` omits the size when it is zero, so the missing
+         * half reads as an omission instead of a claim about a disk nobody
+         * measured.
+         */
+        const page = await this.api.publicBrowse({ size: 1 });
+        return { ...EmptyLibrarySummary, itemCount: page.totalItems ?? 0 };
+      }
+      return librarySummaryToDomain(await this.api.librarySummary());
+    });
   }
 
   browse(filters: LibraryFilters, page = 0): Promise<Title[]> {
     return this.guarded(async () => {
+      if (!this.session.isAuthenticated) {
+        // The public endpoint has no notion of "unwatched" or a height floor —
+        // both are per-profile and per-device questions a visitor cannot
+        // meaningfully ask, so they are dropped rather than sent somewhere the
+        // server would reject them.
+        const guest = await this.api.publicBrowse({
+          category: filters.category ?? 'all',
+          sort: LibrarySortMeta[filters.sort].wire,
+          page,
+        });
+        return (guest.items ?? []).map((i) => publicSummaryToTitle(i, this.baseUrl()));
+      }
       const dto = await this.api.browse({
         category: filters.category ?? 'all',
         unwatched: filters.unwatchedOnly,
@@ -640,6 +696,17 @@ export class RemoteTowerRepository implements TowerRepository {
 
   recentlyAdded(kinds: MediaKind[] = [], limit = 20): Promise<Title[]> {
     return this.guarded(async () => {
+      if (!this.session.isAuthenticated) {
+        // No dedicated public recently-added route; the public browse's single
+        // category chip covers the common case — one kind, or "all" — that the
+        // home screen's rails actually ask for as a guest.
+        const guest = await this.api.publicBrowse({
+          category: kinds.length === 1 ? kinds[0] : 'all',
+          sort: 'added',
+          size: limit,
+        });
+        return (guest.items ?? []).map((i) => publicSummaryToTitle(i, this.baseUrl()));
+      }
       const items = await this.api.recentlyAdded(
         kinds.length > 0 ? kinds.join(',') : null,
         limit,
@@ -657,10 +724,15 @@ export class RemoteTowerRepository implements TowerRepository {
 
   topRated(limit = 20): Promise<Title[]> {
     return this.guarded(async () => {
-      const dto = await this.api.browse({ sort: 'rating', size: limit });
+      const titles = this.session.isAuthenticated
+        ? (await this.api.browse({ sort: 'rating', size: limit })).items?.map((i) =>
+            summaryToTitle(i, this.baseUrl()),
+          )
+        : (await this.api.publicBrowse({ sort: 'rating', size: limit })).items?.map((i) =>
+            publicSummaryToTitle(i, this.baseUrl()),
+          );
       return (
-        (dto.items ?? [])
-          .map((i) => summaryToTitle(i, this.baseUrl()))
+        (titles ?? [])
           // The server sorts nulls last rather than excluding them, so the tail
           // of this page is unrated files. Dropping them here is what keeps the
           // rail honest about being "top rated".
@@ -678,6 +750,13 @@ export class RemoteTowerRepository implements TowerRepository {
    */
   detail(titleId: string): Promise<Title> {
     return this.guarded(async () => {
+      if (!this.session.isAuthenticated) {
+        // No playback plan for a guest: they cannot press play — the gate stops
+        // them — so there is nothing to ask `explainPlayback`, which needs a
+        // token anyway.
+        return publicDetailToTitle(await this.api.publicDetail(titleId), this.baseUrl());
+      }
+
       const dto = await this.api.detail(titleId);
 
       let reasons: string[] = [];
@@ -726,6 +805,29 @@ export class RemoteTowerRepository implements TowerRepository {
    */
   search(query: string): Promise<SearchResults> {
     return this.guarded(async () => {
+      if (!this.session.isAuthenticated) {
+        /*
+         * `/api/media/search` is the parsed kind — it reads "tamil comedies from
+         * the nineties", returns the terms it understood, and sometimes asks a
+         * model. None of that is public, and calling it without a token is a 401
+         * rather than an empty result, so a guest typing in the search box got an
+         * error where a list should be.
+         *
+         * The public browse takes a `q` and runs it through the same query
+         * engine, which is a plain title/artist/album match. So a visitor gets
+         * real results and no parsing: `terms` stays empty and the screen draws
+         * the list without the "Named: …" chips, which is honest — nothing was
+         * understood, because nothing was parsed.
+         */
+        const page = await this.api.publicBrowse({ query, size: GUEST_SEARCH_PAGE_SIZE });
+        return {
+          titles: (page.items ?? []).map((i) => publicSummaryToTitle(i, this.baseUrl())),
+          terms: [],
+          understoodNothing: false,
+          readByModel: false,
+        };
+      }
+
       try {
         const dto = await this.api.smartSearch(query);
         return searchResultToDomain(dto, this.baseUrl());

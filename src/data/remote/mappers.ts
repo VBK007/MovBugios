@@ -45,6 +45,8 @@ import {
   LibrarySummaryDto,
   MediaInfoDto,
   ProfileDto,
+  PublicItemDetailDto,
+  PublicItemSummaryDto,
   SubtitleTrackDto,
   TimelineDto,
   CommentDto,
@@ -255,6 +257,111 @@ export function detailToTitle(
       comments: dto.commentCount ?? 0,
       likedByMe: dto.liked ?? false,
     } satisfies Engagement,
+  });
+}
+
+/**
+ * `posterUrlFor`'s counterpart for a signed-out visitor.
+ *
+ * The authenticated poster route answers 403 with no token, so a guest tile
+ * pointing at it draws a gradient where the artwork is — the library looks
+ * empty rather than unsigned-into. Same picture, different door.
+ */
+export function publicPosterUrlFor(
+  id: string,
+  hasPoster: boolean,
+  baseUrl?: string | null,
+): string | null {
+  return hasPoster && baseUrl ? `${baseUrl}/api/media/public/items/${id}/poster` : null;
+}
+
+/** Same rule for the wide art. */
+export function publicBackdropUrlFor(
+  id: string,
+  hasBackdrop: boolean,
+  baseUrl?: string | null,
+): string | null {
+  return hasBackdrop && baseUrl ? `${baseUrl}/api/media/public/items/${id}/backdrop` : null;
+}
+
+/**
+ * `summaryToTitle` for a visitor with no account.
+ *
+ * No resume position and no watched mark — not because the endpoint forgot
+ * them, but because there is no profile for either to be about. They are left
+ * at their unwatched defaults rather than filled in from somewhere.
+ */
+export function publicSummaryToTitle(
+  dto: PublicItemSummaryDto,
+  baseUrl?: string | null,
+): Title {
+  return makeTitle({
+    id: dto.id,
+    name: dto.title,
+    year: dto.year ?? null,
+    kind: toMediaKind(dto.type),
+    runtimeMinutes: dto.runtimeMinutes ?? null,
+    genres: dto.genres ?? [],
+    rating: dto.rating ?? null,
+    file: makeFileSpec({ filename: '' }),
+    watchState: 'UNWATCHED',
+    durationSeconds: dto.runtimeMinutes != null ? dto.runtimeMinutes * 60 : null,
+    posterUrl: publicPosterUrlFor(dto.id, dto.hasPoster ?? false, baseUrl),
+    backdropUrl: publicBackdropUrlFor(dto.id, dto.hasBackdrop ?? false, baseUrl),
+    artist: dto.artist?.trim() ? dto.artist : null,
+    album: dto.album?.trim() ? dto.album : null,
+    language: dto.language?.trim() ? dto.language : null,
+  });
+}
+
+/** `detailToTitle` for a visitor with no account. */
+export function publicDetailToTitle(
+  dto: PublicItemDetailDto,
+  baseUrl?: string | null,
+): Title {
+  const audioTracks = dto.audioTracks ?? [];
+  const file = toFileSpec(dto.mediaInfo, '', 0);
+  return makeTitle({
+    id: dto.id,
+    name: dto.title,
+    year: dto.year ?? null,
+    kind: toMediaKind(dto.type),
+    runtimeMinutes: dto.runtimeMinutes ?? null,
+    genres: dto.genres ?? [],
+    rating: dto.rating ?? null,
+    synopsis: dto.plot ?? null,
+    tagline: dto.tagline ?? null,
+    certification: dto.certification ?? null,
+    studio: dto.studio ?? null,
+    originalTitle:
+      dto.originalTitle && dto.originalTitle.trim() !== '' && dto.originalTitle !== dto.title
+        ? dto.originalTitle
+        : null,
+    imdbId: dto.imdbId ?? null,
+    file: {
+      ...file,
+      audioLanguages: [
+        ...new Set(
+          audioTracks
+            .map((t) => t.language?.toUpperCase())
+            .filter((l): l is string => l != null && l !== ''),
+        ),
+      ],
+    },
+    watchState: 'UNWATCHED',
+    durationSeconds:
+      dto.mediaInfo?.durationSeconds ??
+      (dto.runtimeMinutes != null ? dto.runtimeMinutes * 60 : null),
+    subtitles: (dto.subtitles ?? []).map(subtitleToDomain),
+    audioTracks: audioTracks.map(audioToDomain),
+    posterUrl: publicPosterUrlFor(dto.id, dto.hasPoster ?? false, baseUrl),
+    backdropUrl: publicBackdropUrlFor(dto.id, dto.hasBackdrop ?? false, baseUrl),
+    artist: dto.artist?.trim() ? dto.artist : null,
+    album: dto.album?.trim() ? dto.album : null,
+    trackNumber: dto.trackNumber ?? null,
+    language: dto.language?.trim() ? dto.language : null,
+    cast: toNameList(dto.castMembers),
+    directors: toNameList(dto.directors),
   });
 }
 

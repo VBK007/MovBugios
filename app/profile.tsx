@@ -21,14 +21,18 @@ export default function ProfileRoute() {
         onSignOut={() => {
           /*
            * Clears the token but leaves the server address, so signing back in
-           * is one password rather than finding the house again. Home has to be
-           * rebuilt rather than returned to: its state captured the repository
-           * it was built with, and that is now the sample one.
+           * is one password rather than finding the house again — and so the
+           * catalogue stays browsable meanwhile, as a visitor's.
+           *
+           * The repository does not change any more: what changes is the guest
+           * flag, which is what withholds playback and the personal rails. Home
+           * is still rebuilt rather than returned to, because its rails were
+           * loaded for an account that no longer exists here.
            */
           void (async () => {
             const repository = ServiceLocator.repository;
             if (repository instanceof RemoteTowerRepository) await repository.signOut();
-            ServiceLocator.useSampleData();
+            ServiceLocator.refreshGuest();
             router.replace('/home');
           })();
         }}

@@ -29,6 +29,7 @@ import { SearchGlyph } from '@/ui/components/Glyphs';
 import { MusicShelves } from '@/ui/screens/library/MusicShelves';
 import { MusicHome, musicHomeIsEmpty } from '@/domain/model/musicHome';
 import { playMusicFrom } from '@/player/playMusic';
+import { usePlayGate } from '@/ui/playGate';
 import { PosterCard } from '@/ui/components/PosterCard';
 import { PosterSkeleton } from '@/ui/components/Rails';
 
@@ -74,6 +75,7 @@ export function LibraryScreen({
 }) {
   const repository = useRepository();
   const profileId = useActiveProfileId();
+  const gate = usePlayGate();
   const { width } = useWindowDimensions();
 
   const [titles, setTitles] = useState<UiState<Title[]>>(Loading);
@@ -302,9 +304,16 @@ export function LibraryScreen({
         {header}
         <MusicShelves
           music={music}
-          onPlay={(tracks, index) => playMusicFrom(tracks, index, onOpenPlayer)}
+          // Gated like a film: without a token the queue starts, says it is
+          // playing, and makes no sound.
+          onPlay={(tracks, index) =>
+            gate.requireAccount(tracks[index]?.name, () =>
+              playMusicFrom(tracks, index, onOpenPlayer),
+            )
+          }
           onOpenRail={onOpenRail}
         />
+        {gate.sheet}
       </View>
     );
   }

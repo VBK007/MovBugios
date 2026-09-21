@@ -56,6 +56,17 @@ export const RecentArt = {
     const unique = [...new Set(urls.filter((url) => url && url.trim() !== ''))].slice(0, POOL);
     await CredentialStore.write(KEY, unique.length > 0 ? unique.join(SEPARATOR) : null);
   },
+
+  /**
+   * Forgotten on sign-out.
+   *
+   * This pool is the last account's library. Left behind, the next person to
+   * open the app is shown six frames from somebody else's films before they
+   * have signed into anything.
+   */
+  async clear(): Promise<void> {
+    await CredentialStore.write(KEY, null);
+  },
 };
 
 /** Fisher–Yates, on a copy — the caller's array is not ours to reorder. */

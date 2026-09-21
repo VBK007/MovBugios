@@ -172,6 +172,34 @@ export function HomeScreen({
               ))}
             </Rail>
           )}
+
+          {/*
+           * A visitor's rails, in the order the hook listed them.
+           *
+           * Only ever populated when signed out, so a signed-in Home is
+           * unchanged — see `HomeContent.guestRails` for why these exist at all.
+           * Each carries its own heading because "Most watched films" and
+           * "Photos" are not the same kind of claim.
+           */}
+          {content.data.guestRails.map((rail) => (
+            <Rail key={rail.heading} heading={rail.heading}>
+              {rail.titles.map((title, index) =>
+                title.kind === 'MUSIC' ? (
+                  <AlbumTile
+                    key={title.id}
+                    track={title}
+                    onPress={() => onPlayMusic(rail.titles, index)}
+                  />
+                ) : (
+                  <PosterCard
+                    key={title.id}
+                    title={title}
+                    onPress={() => onOpenTitle(title.id)}
+                  />
+                ),
+              )}
+            </Rail>
+          ))}
         </>
       )}
     </ScrollView>

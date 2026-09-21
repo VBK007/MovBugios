@@ -49,8 +49,25 @@ type ConnectStep = 'ADDRESS' | 'SIGN_IN';
  * library are wired here.
  */
 export function ConnectScreen({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState<ConnectStep>('ADDRESS');
-  const [address, setAddress] = useState(ServiceLocator.DEFAULT_BASE_URL);
+  /**
+   * Whatever the app is talking to *right now*, first.
+   *
+   * This is usually the address the directory published at launch, and it used
+   * to be missing here — so a visitor who was already browsing a server pressed
+   * Sign in and was asked to find it. The build's baked-in default is the
+   * fallback, and it is the one most likely to be a tunnel that has since
+   * rotated away, which is precisely the case the directory exists to fix.
+   */
+  const known = ServiceLocator.session.baseUrl.get() ?? '';
+
+  /*
+   * And the address step is skipped when there is one. Somebody who reached this
+   * screen from a play button wants to sign in, not to re-enter a URL that is
+   * already working — the step is still reachable by pressing Back from the
+   * sign-in step.
+   */
+  const [step, setStep] = useState<ConnectStep>(known === '' ? 'ADDRESS' : 'SIGN_IN');
+  const [address, setAddress] = useState(known || ServiceLocator.DEFAULT_BASE_URL);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);

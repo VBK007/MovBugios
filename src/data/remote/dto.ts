@@ -144,6 +144,69 @@ export interface ItemPageDto {
   totalPages?: number;
 }
 
+/**
+ * `CatalogDtos.PublicItemSummaryDto` — the same tile, minus every field that
+ * only means something for a signed-in profile (resume position, watched,
+ * liked).
+ *
+ * A separate shape rather than a reuse of `ItemSummaryDto` with everything
+ * optional: what is missing here is the point. A guest tile that could carry a
+ * resume position would eventually be given one by a mapper that stopped
+ * distinguishing them, and that would be a claim about somebody who has no
+ * profile to have watched anything with.
+ */
+export interface PublicItemSummaryDto {
+  id: string;
+  type: string;
+  title: string;
+  year?: number | null;
+  runtimeMinutes?: number | null;
+  rating?: number | null;
+  genres?: string[];
+  hasPoster?: boolean;
+  hasBackdrop?: boolean;
+  artist?: string | null;
+  album?: string | null;
+  language?: string | null;
+}
+
+export interface PublicItemPageDto {
+  items?: PublicItemSummaryDto[];
+  page?: number;
+  size?: number;
+  totalItems?: number;
+  totalPages?: number;
+}
+
+/** `CatalogDtos.PublicItemDetailDto` — the title-opened view for a visitor. */
+export interface PublicItemDetailDto {
+  id: string;
+  type: string;
+  title: string;
+  originalTitle?: string | null;
+  year?: number | null;
+  plot?: string | null;
+  tagline?: string | null;
+  runtimeMinutes?: number | null;
+  rating?: number | null;
+  certification?: string | null;
+  genres?: string[];
+  language?: string | null;
+  directors?: string | null;
+  castMembers?: string | null;
+  studio?: string | null;
+  quality?: string | null;
+  imdbId?: string | null;
+  artist?: string | null;
+  album?: string | null;
+  trackNumber?: number | null;
+  hasPoster?: boolean;
+  hasBackdrop?: boolean;
+  mediaInfo?: MediaInfoDto | null;
+  subtitles?: SubtitleTrackDto[];
+  audioTracks?: AudioTrackDto[];
+}
+
 export interface ContinueWatchingDto {
   item: ItemSummaryDto;
   positionSeconds: number;

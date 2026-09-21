@@ -154,6 +154,8 @@ export class FakeTowerRepository implements TowerRepository {
         return [...items].sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
       case 'RATING':
         return [...items].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+      case 'VIEWS':
+        return [...items].sort((a, b) => b.engagement.views - a.engagement.views);
       // The sample library is already in the order the disk produced it.
       case 'ADDED':
       case 'CAPTURED':

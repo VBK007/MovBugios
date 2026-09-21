@@ -33,7 +33,13 @@ export function useActiveProfileId(): string | null {
   return useFlow(repository.activeProfile)?.id ?? null;
 }
 
-/** True while the app is on the sample library — which also means signed out. */
+/**
+ * True while nobody is signed in.
+ *
+ * No longer the same as "on the sample library": a visitor browses the real
+ * server's public catalogue, and this flag is what withholds the half that needs
+ * a token rather than what chooses which library is shown.
+ */
 export function useIsGuest(): boolean {
   return useFlow(usingSampleDataFlow);
 }

@@ -25,6 +25,7 @@ import { UiStateError } from '@/ui/components/ServerError';
 import { ChevronGlyph, PlayGlyph, ShuffleGlyph } from '@/ui/components/Glyphs';
 import { DataLabel, DataMeta } from '@/ui/components/Primitives';
 import { playMusicFrom } from '@/player/playMusic';
+import { usePlayGate } from '@/ui/playGate';
 
 /** A shelf opened deliberately is read, not skimmed. */
 const PLAYLIST_LIMIT = 60;
@@ -98,9 +99,16 @@ export function ShelfScreen({
 
   const tracks = state.type === 'LOADED' ? state.data.tracks : [];
 
+  const gate = usePlayGate();
+
+  // Gated like a film: a track needs a stream and a stream needs a token, so
+  // without one the queue starts, says it is playing, and makes no sound.
   const play = useCallback(
-    (index: number) => playMusicFrom(tracks, index, onOpenPlayer),
-    [tracks, onOpenPlayer],
+    (index: number) =>
+      gate.requireAccount(tracks[index]?.name, () =>
+        playMusicFrom(tracks, index, onOpenPlayer),
+      ),
+    [tracks, onOpenPlayer, gate],
   );
 
   /**
@@ -111,13 +119,15 @@ export function ShelfScreen({
    * track end can repeat one and skip another forever.
    */
   const shuffle = useCallback(() => {
-    const shuffled = [...tracks];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    playMusicFrom(shuffled, 0, onOpenPlayer);
-  }, [tracks, onOpenPlayer]);
+    gate.requireAccount(null, () => {
+      const shuffled = [...tracks];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      playMusicFrom(shuffled, 0, onOpenPlayer);
+    });
+  }, [tracks, onOpenPlayer, gate]);
 
   return (
     <View style={{ flex: 1, backgroundColor: Ink }}>
@@ -153,6 +163,7 @@ export function ShelfScreen({
           )}
         />
       )}
+      {gate.sheet}
     </View>
   );
 }

@@ -17,17 +17,34 @@ export function usePlayGate() {
   /** The title's name while the sheet is up, or null when it is not. */
   const [promptFor, setPromptFor] = useState<string | null>(null);
 
+  /**
+   * Runs `action`, or asks for an account first.
+   *
+   * One gate rather than a check at each button, because they kept being
+   * forgotten. Playing and hosting a party were guarded; downloading, liking,
+   * commenting and casting were not — so a visitor could press those, and what
+   * they got was a 403 swallowed somewhere with no visible effect at all. A
+   * button that silently does nothing is worse than one that explains itself:
+   * the first reads as the app being broken, the second as an account being
+   * needed.
+   *
+   * The title's name rides along so the sheet can name what it is for — "Sign in
+   * to save Amaran" says more than "sign in".
+   */
+  const requireAccount = useCallback((titleName: string | null | undefined, action: () => void) => {
+    if (ServiceLocator.isGuest) setPromptFor(titleName ?? '');
+    else action();
+  }, []);
+
   const play = useCallback(
     (titleId: string, titleName?: string | null) => {
-      if (ServiceLocator.isGuest) {
-        setPromptFor(titleName ?? '');
-      } else {
+      requireAccount(titleName, () => {
         // Cast because typed routes are generated from the app directory and
         // this file is outside it; the route exists at app/player/[titleId].tsx.
         router.push(`/player/${titleId}` as never);
-      }
+      });
     },
-    [router],
+    [router, requireAccount],
   );
 
   /**
@@ -38,13 +55,9 @@ export function usePlayGate() {
    */
   const host = useCallback(
     (titleId: string, titleName?: string | null) => {
-      if (ServiceLocator.isGuest) {
-        setPromptFor(titleName ?? '');
-      } else {
-        router.push(`/together?item=${titleId}` as never);
-      }
+      requireAccount(titleName, () => router.push(`/together?item=${titleId}` as never));
     },
-    [router],
+    [router, requireAccount],
   );
 
   const sheet =
@@ -59,5 +72,5 @@ export function usePlayGate() {
       />
     );
 
-  return { play, host, sheet };
+  return { play, host, requireAccount, sheet };
 }

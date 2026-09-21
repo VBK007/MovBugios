@@ -35,21 +35,39 @@ const fake = new FakeTowerRepository();
 
 const remote = new RemoteTowerRepository(api, session);
 
-const _repository = new MutableStateFlow<TowerRepository>(fake);
+/**
+ * Starts on `remote`, not `fake`: a visitor should see the real catalogue from
+ * the first frame whenever a server address is known at all. `useSampleData` is
+ * the fallback for the one case where that is not true — no address has ever
+ * been paired and none is baked into this build.
+ */
+const _repository = new MutableStateFlow<TowerRepository>(remote);
 
-/** What every screen reads. Changes when the user connects to a server. */
+/** What every screen reads. Changes only in the no-server-known fallback. */
 export const repositoryFlow = _repository;
 
-const _usingSampleData = new MutableStateFlow(true);
-
 /**
- * True while the app is running on the sample library.
+ * True when nobody is signed in — which is no longer the same question as
+ * "which repository is installed".
  *
- * Also means "signed out": the sample library is what a visitor browses before
- * connecting to a real server, so this doubles as the guest flag that gates
- * playback.
+ * It used to be: signed out meant the sample library, so one flag answered both.
+ * Now a visitor browses the real server's public catalogue, and only the things
+ * that need a token — playback, liking, resuming — are withheld. So this is
+ * driven by the session rather than by the repository object: true on `fake`
+ * unconditionally, since there is no account to hold a token against, and true
+ * on `remote` whenever the session is unauthenticated.
+ *
+ * A flow because screens redraw on it, and it changes at sign-in and sign-out
+ * without the repository underneath changing at all.
  */
-export const usingSampleDataFlow = _usingSampleData;
+const _guest = new MutableStateFlow(true);
+
+export const usingSampleDataFlow = _guest;
+
+/** Re-reads the session. Called wherever a token is gained or lost. */
+function refreshGuest(): void {
+  _guest.set(_repository.get() === fake || !session.isAuthenticated);
+}
 
 export const ServiceLocator = {
   DEFAULT_BASE_URL,
@@ -60,8 +78,19 @@ export const ServiceLocator = {
 
   /** Playback needs a real server and a real token; browsing does not. */
   get isGuest(): boolean {
-    return _usingSampleData.get();
+    return _guest.get();
   },
+
+  /**
+   * Re-reads whether anybody is signed in.
+   *
+   * Signing in no longer swaps the repository, so something has to say that the
+   * answer changed. Called after login, after a restored session, and after a
+   * sign-out that keeps the server.
+   */
+  refreshGuest,
+
+  session,
 
   /** The remote repository, for the connect screen's login call. */
   remoteRepository(): RemoteTowerRepository {
@@ -72,23 +101,39 @@ export const ServiceLocator = {
     return api;
   },
 
-  /** Switches the whole app onto the real server. */
+  /**
+   * Puts the whole app on the real server.
+   *
+   * Signed in or not: the guest flag is read off the session afterwards, so the
+   * one call covers both a restored session and a visitor who has an address and
+   * no account.
+   */
   useRemote(): void {
     _repository.set(remote);
-    _usingSampleData.set(false);
+    refreshGuest();
   },
 
-  /** Falls back to the sample library — used when signing out. */
+  /**
+   * Falls back to the sample library.
+   *
+   * Only for the case where there is no server to browse at all — not for
+   * signing out, which now leaves the visitor on the real catalogue.
+   */
   useSampleData(): void {
     session.clear();
     session.setBaseUrl(null);
     _repository.set(fake);
-    _usingSampleData.set(true);
+    _guest.set(true);
   },
 
-  /** Test seam: install any implementation, including a stub. */
+  /**
+   * Test seam: install any implementation, including a stub.
+   *
+   * A stub stands in for a server that answers, so it is treated as signed in —
+   * a test that wants the guest half installs nothing and clears the session.
+   */
   install(repository: TowerRepository): void {
     _repository.set(repository);
-    _usingSampleData.set(repository instanceof FakeTowerRepository);
+    _guest.set(repository instanceof FakeTowerRepository);
   },
 };

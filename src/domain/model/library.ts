@@ -48,11 +48,20 @@ export const EmptyLibrarySummary: LibrarySummary = {
   genres: [],
 };
 
+/**
+ * `1448 TITLES · 146.5 GB`, or just the count when the size is not known.
+ *
+ * A signed-out visitor is counted but not measured — the public endpoint
+ * reports how many items match and nothing about the disk, which is not a
+ * visitor's business. Printing the missing half as "0 B" would be a claim
+ * rather than an omission.
+ */
 export function summaryMonoLine(s: LibrarySummary): string {
+  if (s.totalBytes === 0) return `${s.itemCount} TITLES`;
   return `${s.itemCount} TITLES · ${formatBytes(s.totalBytes)}`;
 }
 
-export type LibrarySort = 'TITLE' | 'ADDED' | 'YEAR' | 'RATING' | 'CAPTURED';
+export type LibrarySort = 'TITLE' | 'ADDED' | 'YEAR' | 'RATING' | 'CAPTURED' | 'VIEWS';
 
 export const LibrarySortMeta: Record<LibrarySort, { label: string; wire: string }> = {
   TITLE: { label: 'A→Z', wire: 'title' },
@@ -60,10 +69,25 @@ export const LibrarySortMeta: Record<LibrarySort, { label: string; wire: string 
   YEAR: { label: 'YEAR', wire: 'year' },
   RATING: { label: 'RATING', wire: 'rating' },
   CAPTURED: { label: 'CAPTURED', wire: 'captured' },
+  /**
+   * How often it has been played, most first.
+   *
+   * The server has counted this all along and nothing asked for it. Note what it
+   * is not: an all-time count, not a trend — the catalogue has no time window to
+   * ask for, so "most watched" is honest where "top this week" would not be.
+   */
+  VIEWS: { label: 'MOST WATCHED', wire: 'views' },
 };
 
 /** The order the sort chip cycles through when tapped. */
-export const LibrarySortCycle: LibrarySort[] = ['TITLE', 'ADDED', 'YEAR', 'RATING', 'CAPTURED'];
+export const LibrarySortCycle: LibrarySort[] = [
+  'TITLE',
+  'ADDED',
+  'YEAR',
+  'RATING',
+  'CAPTURED',
+  'VIEWS',
+];
 
 /** Library grid filters. Mono chips, because each one names a measured property. */
 export interface LibraryFilters {

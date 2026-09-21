@@ -250,10 +250,15 @@ export function MovieDetailScreen({
           teasers={teasers}
           castPhotos={castPhotos}
           preview={preview}
-          onDownload={() => void repository.download(title.data.id)}
+          // Saving, liking and commenting all need an account, and every one of
+          // them used to fail silently for a visitor — a 403 swallowed where
+          // nothing draws it. See `requireAccount`.
+          onDownload={() =>
+            gate.requireAccount(title.data.name, () => void repository.download(title.data.id))
+          }
           onOpenTitle={onOpenTitle}
-          onToggleLike={() => void toggleLike()}
-          onOpenComments={comments.open}
+          onToggleLike={() => gate.requireAccount(title.data.name, () => void toggleLike())}
+          onOpenComments={() => gate.requireAccount(title.data.name, comments.open)}
           onPlay={() => gate.play(title.data.id, title.data.name)}
           onWatchTogether={() => gate.host(title.data.id, title.data.name)}
           onOpenTeasers={onOpenTeasers}
