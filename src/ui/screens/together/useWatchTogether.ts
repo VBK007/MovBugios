@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { PartyEvent, PartySocket } from '@/data/remote/partySocket';
@@ -158,7 +159,7 @@ export function useWatchTogether(mediaItemId: string | null, joinCode: string | 
         openSocket(joined.code);
       } catch (e) {
         if (!alive.current) return;
-        const message = e instanceof Error ? e.message : 'That did not work.';
+        const message = failureCopy(e);
         if (code) setCodeError(message);
         else setParty(offline(message));
       } finally {

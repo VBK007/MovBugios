@@ -49,6 +49,7 @@ import { AmberButton, DataLabel, DataMeta, StatePill } from '@/ui/components/Pri
 import { Scrubber } from '@/ui/components/Scrubber';
 import { ThumbnailPreview } from '@/ui/components/ThumbnailPreview';
 import { CommentsOverlay } from '@/ui/comments/CommentsSheet';
+import { PartyEye, PartyMembersSheet } from '@/ui/components/PartyMembers';
 import { MusicPlayerScreen } from '@/ui/screens/player/MusicPlayerScreen';
 import { MusicPlayback, nowPlayingAsTitle } from '@/player/musicPlayback';
 import { useFlow } from '@/ui/hooks';
@@ -69,6 +70,7 @@ const INITIAL_BRIGHTNESS = 0.6;
 
 /** How long the read-out stays after the finger lifts. */
 const HUD_LINGER_MS = 700;
+
 
 /**
  * The player.
@@ -243,10 +245,32 @@ export function PlayerScreen({
 
   // The player owns the clock; the hook mirrors it so the scrubber, timecodes
   // and progress reporting all read from one source of truth.
+  /**
+   * Frames are arriving, so nothing on this screen may claim they are not.
+   *
+   * Every failure here is a thing that was true at some moment: a request that
+   * did not come back, a status that went to error. None of them were being
+   * withdrawn. `sourceError` in particular is only cleared by a *successful*
+   * request, so a language change or a quality change that failed left "This
+   * will not play" standing over a film that was playing throughout.
+   *
+   * A picture that is running is the stronger evidence, and it wins. Reset when
+   * a new stream is asked for, because at that point the old evidence is about a
+   * stream nobody is watching any more.
+   */
+  const [advancing, setAdvancing] = useState(false);
+  useEffect(() => {
+    setAdvancing(false);
+  }, [p.source]);
+
   useEventListener(player, 'timeUpdate', ({ currentTime }) => {
     // Video only. A music title leaves this player empty on purpose, so it never
     // ticks — the block below reports from the app's player instead.
     if (isMusic) return;
+    if (player.playing && currentTime > 0) {
+      setAdvancing(true);
+      setPlaybackError(null);
+    }
     p.onPlayerProgress(currentTime, player.duration ?? 0, player.playing);
   });
 
@@ -259,7 +283,9 @@ export function PlayerScreen({
      * and it is the file inside them the player refuses — so nothing upstream
      * has anything to report.
      */
-    setPlaybackError(status === 'error' ? (error?.message ?? 'This file will not play.') : null);
+    // AVFoundation's own wording is a code and a domain, which is no more use
+    // on screen than the server's. The file line underneath carries the fact.
+    setPlaybackError(status === 'error' ? 'This phone could not play this file.' : null);
   });
 
   // Play/pause is expressed as intent in the hook and applied to the player
@@ -386,42 +412,25 @@ export function PlayerScreen({
   }, [inParty, p.seekRequest]);
 
   /**
-   * Sound but no picture, which is its own failure and shows nothing today.
+   * What the player can say about the stream it is holding.
    *
-   * A video codec this phone cannot decode does not raise an error. The item
-   * loads, the audio plays, and the picture is simply absent — AVFoundation
-   * reports a ready item with no video track rather than refusing it. Ten-bit
-   * H.264 is the common case, and anime releases are full of it.
+   * Deliberately only two facts, and deliberately not a judgement. An earlier
+   * version of this tried to decide whether the picture had failed, by reading
+   * whether the player had a video track. That cannot work here: iOS reports
+   * video tracks only for an HLS source, so a progressive file has none whether
+   * it is playing perfectly or not at all — and the check accused working films
+   * of being broken, over the top of the picture it was wrong about.
    *
-   * Read once the item is ready: before that a missing track means "not loaded
-   * yet" rather than "cannot be played", and reacting early would accuse every
-   * film of it during its first second.
+   * So it states what is true and leaves the conclusion to a person.
+   *
+   * Carried as a technical badge, so it obeys the switch that already governs
+   * every other server-measured value: on for somebody diagnosing a file, gone
+   * for everybody else.
    */
-  const videoMissing =
-    !isMusic &&
-    !buffering &&
-    playbackError == null &&
-    content != null &&
-    player.status === 'readyToPlay' &&
-    player.videoTrack == null;
+  const streamLine = [`STATUS ${player.status.toUpperCase()}`, sourceKind(p.source?.url)]
+    .filter((part): part is string => part != null)
+    .join(' · ');
 
-  /*
-   * No picture, so stop asking for that codec and ask again.
-   *
-   * Automatic rather than a button. How a stream is tagged inside its container
-   * is not something anybody should have to know about, and a control reading
-   * "Convert it" asks them to diagnose a codec before they can watch a film.
-   *
-   * Once per codec: `refuseVideoCodec` returns false for one already withdrawn,
-   * which is what stops a file the server cannot fix from re-requesting forever.
-   */
-  const [converting, setConverting] = useState(false);
-  useEffect(() => {
-    if (!videoMissing || content == null) return;
-    const codec = content.title.file.videoCodec;
-    if (codec == null) return;
-    setConverting(p.refuseVideoCodec(codec));
-  }, [videoMissing, content, p]);
 
   /*
    * The chosen language, applied to the stream this device is holding.
@@ -546,72 +555,24 @@ export function PlayerScreen({
       {p.nightMode && <View pointerEvents="none" style={styles.nightVeil} />}
 
       {p.content.type === 'LOADING' && <PlayerMessage heading="Opening…" />}
-      {p.content.type === 'ASLEEP' && (
+      {p.content.type === 'ASLEEP' && !advancing && (
         <PlayerMessage
           heading="The disk is asleep"
           body="Tower has to spin up before this can play. Go back and wake it."
         />
       )}
-      {p.content.type === 'OFFLINE' && (
+      {p.content.type === 'OFFLINE' && !advancing && (
         <PlayerMessage heading="Cannot reach Tower" body={p.content.message} />
       )}
       {p.content.type === 'EMPTY' && (
         <PlayerMessage heading="Not on the disk" body={p.content.message} />
       )}
-      {p.sourceError != null && (
+      {p.sourceError != null && !advancing && (
         <PlayerMessage heading="This will not play" body={p.sourceError} />
       )}
 
-      {/*
-       * Sound with no picture, which the player does not call an error: the
-       * item is ready, the audio runs, and the video track is simply absent.
-       *
-       * The plan is shown beside the file because the two together are the
-       * whole diagnosis — a direct play means the server sent it untouched,
-       * and a transcode that still has no picture means it rewrapped the
-       * container and copied the video rather than encoding it.
-       */}
-      {videoMissing && content != null && (
-        <PlayerMessage
-          heading={converting ? 'Converting the picture' : 'Sound but no picture'}
-          body={
-            converting
-              ? 'This phone could not show the video as it was sent, so Tower is converting ' +
-                'it. Playback carries on from where you were.'
-              : 'This phone cannot show the video in this file, and asking Tower to convert ' +
-                'it did not help. The file may need re-encoding on the server.'
-          }
-          detail={[p.planPillText, fileLine(content.title)]
-            .filter((part) => part != null && part !== '')
-            .join('  —  ')}
-          /*
-           * What this device can actually see, which is the only thing that
-           * settles it.
-           *
-           * Four guesses have been made about this file from its codec name
-           * alone and all four were wrong, so the player reports its own state
-           * instead: whether it found a video track, how many it was offered,
-           * and what kind of stream it thinks it is reading. The last one
-           * matters because an extensionless URL is treated as a progressive
-           * download, and a server sending HLS at such a URL would look exactly
-           * like this — sound, no picture, no error.
-           *
-           * The query string is dropped: it carries the session token.
-           */
-          diagnostic={[
-            `TRACKS ${player.availableVideoTracks.length}`,
-            `STATUS ${player.status.toUpperCase()}`,
-            sourceKind(p.source?.url),
-            p.refusedVideoCodecs.length > 0
-              ? `REFUSED ${p.refusedVideoCodecs.join(',').toUpperCase()}`
-              : null,
-          ]
-            .filter((part): part is string => part != null)
-            .join(' · ')}
-        />
-      )}
 
-      {p.sourceError == null && playbackError != null && (
+      {p.sourceError == null && playbackError != null && !advancing && (
         <PlayerMessage
           heading="This will not play here"
           body={playbackError}
@@ -639,6 +600,7 @@ export function PlayerScreen({
       {p.controlsVisible && content != null && (
         <Controls
           player={p}
+          streamLine={streamLine}
           title={content.title}
           buffering={buffering}
           onCollapse={onCollapse}
@@ -651,6 +613,20 @@ export function PlayerScreen({
        * underneath should not be reachable while it is open.
        */}
       {p.sheet != null && <PlayerOptionSheet player={p} title={content?.title} />}
+
+      {/*
+       * Over the picture, and above the controls that opened it. The music
+       * screen renders its own, so this one belongs to the film player alone —
+       * put in the wrong branch it drew twice there and not at all here.
+       */}
+      {p.party != null && p.party.membersOpen && (
+        <PartyMembersSheet
+          party={p.party}
+          verb="watching"
+          onEnd={p.endParty}
+          onClose={() => p.setMembersOpen(false)}
+        />
+      )}
 
       {comments.state.open && <CommentsOverlay controller={comments} />}
     </View>
@@ -670,12 +646,14 @@ type PlayerApi = ReturnType<typeof usePlayer>;
  */
 function Controls({
   player,
+  streamLine,
   title,
   buffering,
   onCollapse,
   onOpenComments,
 }: {
   player: PlayerApi;
+  streamLine: string;
   title: Title;
   buffering: boolean;
   onCollapse: () => void;
@@ -688,6 +666,7 @@ function Controls({
       <View pointerEvents="box-none" style={{ paddingTop: insets.top }}>
         <TopBar
           player={player}
+          streamLine={streamLine}
           title={title}
           onCollapse={onCollapse}
           onOpenComments={onOpenComments}
@@ -736,11 +715,13 @@ function Controls({
 
 function TopBar({
   player,
+  streamLine,
   title,
   onCollapse,
   onOpenComments,
 }: {
   player: PlayerApi;
+  streamLine: string;
   title: Title;
   onCollapse: () => void;
   onOpenComments: () => void;
@@ -793,17 +774,28 @@ function TopBar({
       </View>
 
       {player.party != null && (
-        <StatePill
-          text={
-            player.party.note ??
-            (player.party.isHost
-              ? `You are hosting · ${player.party.code}`
-              : `Watching together · ${player.party.code}`)
-          }
-          tint={player.party.connected ? Amber : OnInkFaint}
-          technical={false}
-          style={{ marginTop: 12, alignSelf: 'flex-start' }}
-        />
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12 }}>
+          <StatePill
+            text={
+              player.party.note ??
+              (player.party.isHost
+                ? `You are hosting · ${player.party.code}`
+                : `Watching together · ${player.party.code}`)
+            }
+            tint={player.party.connected ? Amber : OnInkFaint}
+            technical={false}
+          />
+          {/*
+           * Beside the pill rather than in the transport row. The pill says
+           * there is a party; this says who is in it, and the two are read
+           * together — where the transport is about the film.
+           */}
+          <PartyEye
+            party={player.party}
+            joining={false}
+            onPress={() => player.setMembersOpen(true)}
+          />
+        </View>
       )}
 
       {player.planPillText != null && (
@@ -812,6 +804,11 @@ function TopBar({
           tint={player.plan.type === 'TRANSCODE' ? Amber : DirectPlay}
           style={{ marginTop: 12, alignSelf: 'flex-start' }}
         />
+      )}
+
+      {/* Under the plan, because the two are read together. */}
+      {streamLine !== '' && (
+        <DataMeta text={streamLine} color={OnInkFaint} style={{ marginTop: 8 }} />
       )}
     </View>
   );

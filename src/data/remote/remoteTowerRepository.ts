@@ -62,6 +62,7 @@ import {
 } from '@/domain/model/player';
 import { TowerApi } from '@/data/remote/towerApi';
 import { CredentialKeys, TowerSession } from '@/data/remote/towerSession';
+import { lookupPublishedBaseUrl } from '@/data/remote/serverDirectory';
 import { EmptySavedSummary, SavedItem, SavedSummary } from '@/domain/model/downloads';
 import {
   JumpTarget,
@@ -104,7 +105,9 @@ const DIRECT_PLAY_PREFIX = 'direct play';
 function currentCapabilities() {
   return {
     containers: ['mp4', 'mov', 'm4v'],
-    videoCodecs: ['h264', 'hevc'],
+    // H.264 only — see the player's capabilities for the evidence. An HEVC
+    // file direct-played to this phone shows no picture at all.
+    videoCodecs: ['h264'],
     // No Dolby Digital: AVPlayer on an iPhone will not decode it, and claiming
     // it here had the server direct-play films that then arrived silent.
     audioCodecs: ['aac', 'mp3', 'alac', 'flac'],
@@ -302,7 +305,13 @@ export class RemoteTowerRepository implements TowerRepository {
 
   /** Restores a session saved by a previous run. Returns true if one was found. */
   async restoreSession(): Promise<boolean> {
-    const baseUrl = await CredentialStore.read(CredentialKeys.baseUrl);
+    // The stored address first: somebody who typed one has said something more
+    // specific than any lookup can.
+    let baseUrl = await CredentialStore.read(CredentialKeys.baseUrl);
+
+    // Nothing stored — ask where the server is. This is how a fresh install
+    // with no baked-in address finds the house without being told.
+    if (!baseUrl) baseUrl = await this.adoptPublishedAddress();
     if (!baseUrl) return false;
     this.session.setBaseUrl(baseUrl);
 
@@ -312,6 +321,21 @@ export class RemoteTowerRepository implements TowerRepository {
     this.session.refreshToken.set(await CredentialStore.read(CredentialKeys.refreshToken));
     this.session.profileId.set(await CredentialStore.read(CredentialKeys.profileId));
 
+    if (await this.loadProfilesQuietly()) return true;
+
+    // The address we had stopped answering, which is the ordinary end of a
+    // tunnel's life — a free hostname changes on every restart. Ask where the
+    // server moved to before giving up. Only after a failure, so a working
+    // address never costs a round trip.
+    const published = await this.adoptPublishedAddress();
+    if (!published || published === baseUrl) return false;
+
+    this.session.setBaseUrl(published);
+    return this.loadProfilesQuietly();
+  }
+
+  /** `loadProfiles`, reporting failure rather than throwing it. */
+  private async loadProfilesQuietly(): Promise<boolean> {
     try {
       await this.loadProfiles(null);
       this._serverState.set(online());
@@ -319,6 +343,21 @@ export class RemoteTowerRepository implements TowerRepository {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Takes the published address, and remembers it.
+   *
+   * Written to the credential store as well as returned, because the point is
+   * that the next launch starts in the right place rather than discovering it
+   * again — and because everything else that asks "where is the server" reads
+   * that key.
+   */
+  private async adoptPublishedAddress(): Promise<string | null> {
+    const published = await lookupPublishedBaseUrl();
+    if (!published) return null;
+    await CredentialStore.write(CredentialKeys.baseUrl, published);
+    return published;
   }
 
   async selectProfile(profileId: string): Promise<void> {

@@ -17,7 +17,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import {
   Amber,
   AmberInk,
-  DirectPlay,
   Ink,
   OnInk,
   OnInkFaint,
@@ -53,7 +52,8 @@ import { Scrubber } from '@/ui/components/Scrubber';
 import { MusicPlayback } from '@/player/musicPlayback';
 import { MusicQueue } from '@/player/musicQueue';
 import { PartyMessage } from '@/domain/model/watchParty';
-import { PartyPlayback, partyWatching } from '@/ui/screens/player/usePlayer';
+import { PartyPlayback } from '@/ui/screens/player/usePlayer';
+import { PartyEye, PartyMembersSheet } from '@/ui/components/PartyMembers';
 import { useFlow } from '@/ui/hooks';
 
 /** What a player driving this screen has to provide. */
@@ -298,22 +298,12 @@ export function MusicPlayerScreen({
             </View>
           </View>
 
-          {(party != null || partyJoining) && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Who is listening"
-              disabled={party == null}
-              onPress={() => onOpenMembers(true)}
-              style={({ pressed }) => [styles.watching, { opacity: pressed ? 0.7 : 1 }]}
-            >
-              <EyeGlyph color={party == null ? OnInkFaint : OnInkMuted} size={15} />
-              <DataMeta
-                text={party == null ? 'JOINING' : `${partyWatching(party)} LISTENING`}
-                color={party == null ? OnInkFaint : OnInkMuted}
-                technical={false}
-              />
-            </Pressable>
-          )}
+          <PartyEye
+            party={party}
+            joining={partyJoining}
+            onPress={() => onOpenMembers(true)}
+            style={{ alignSelf: 'center' }}
+          />
 
           <Transport
             playing={playing}
@@ -361,8 +351,9 @@ export function MusicPlayerScreen({
       </View>
 
       {party != null && party.membersOpen && (
-        <PartyMembers
+        <PartyMembersSheet
           party={party}
+          verb="listening"
           onEnd={onEndParty}
           onClose={() => onOpenMembers(false)}
         />
@@ -612,93 +603,6 @@ function Transport({
   );
 }
 
-/**
- * Who is actually still in the room.
- *
- * The host's question while something is playing is not "who could join" — it
- * is whether anybody is still there, and the answer used to be two screens
- * away in the lobby. So it is here, behind the count beside the transport.
- *
- * Ending the party lives at the foot of it, because this is the screen about
- * the party rather than about the music. A host ends it for everyone; a member
- * only walks out — the same split the lobby makes, and the reason the label
- * differs. Saying "End" to a guest would promise something they cannot do and
- * threaten something they do not mean.
- */
-function PartyMembers({
-  party,
-  onEnd,
-  onClose,
-}: {
-  party: PartyPlayback;
-  onEnd: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <View style={StyleSheet.absoluteFill}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
-
-      <View style={styles.membersSheet}>
-        <View style={styles.sheetHeader}>
-          <View style={{ flex: 1 }}>
-            <Text style={[TowerType.titleSection, { color: OnInk }]}>Listening together</Text>
-            <DataMeta
-              text={`CODE ${party.code}`}
-              color={OnInkFaint}
-              technical={false}
-              style={{ marginTop: 3 }}
-            />
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-            onPress={onClose}
-            style={styles.headerButton}
-          >
-            <ChevronGlyph rotation={90} color={OnInk} size={16} />
-          </Pressable>
-        </View>
-
-        <HairlineDivider />
-
-        <FlatList
-          data={party.members}
-          keyExtractor={(member) => member.id}
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingVertical: 6 }}
-          renderItem={({ item }) => (
-            <View style={styles.memberRow}>
-              <StatusDot color={item.online ? DirectPlay : OnInkFaint} pulsing={item.online} />
-              <Text style={[TowerType.titleRow, { color: OnInk, flex: 1 }]} numberOfLines={1}>
-                {item.name}
-              </Text>
-              {item.isHost && <DataMeta text="HOST" color={Amber} technical={false} />}
-            </View>
-          )}
-        />
-
-        <HairlineDivider />
-
-        <View style={{ padding: Space.Screen }}>
-          <OutlineButton
-            label={party.isHost ? 'End the party' : 'Leave the party'}
-            onPress={onEnd}
-            fillWidth
-          />
-          {/*
-           * Said outright, both ways round. A control that might silently stop
-           * the music is one nobody dares press.
-           */}
-          <Text style={[TowerType.bodyNote, { color: OnInkFaint, marginTop: 10 }]}>
-            {party.isHost
-              ? 'Everyone stops listening together. The music keeps playing here.'
-              : 'You stop listening together. The music keeps playing here.'}
-          </Text>
-        </View>
-      </View>
-    </View>
-  );
-}
 
 /**
  * The party talking, over the sleeve.

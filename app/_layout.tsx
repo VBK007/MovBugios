@@ -1,8 +1,9 @@
 import { ClientCapabilities } from '@/domain/model/player';
 import { ServiceLocator } from '@/di/serviceLocator';
+import { MiniPlayer } from '@/ui/components/MiniPlayer';
 import { MusicPlayback } from '@/player/musicPlayback';
 import { MusicQueue } from '@/player/musicQueue';
-import { Stack } from 'expo-router';
+import { Stack, router, usePathname, useSegments } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -36,7 +37,8 @@ SplashScreen.preventAutoHideAsync().catch(() => {
  */
 const MUSIC_CAPABILITIES: ClientCapabilities = {
   deviceName: 'iPhone',
-  videoCodecs: ['h264', 'hevc'],
+  // H.264 only, as above. A track queued on its own must not fail silently.
+  videoCodecs: ['h264'],
   // No Dolby Digital here either, and for the same reason — see the player's
   // own capabilities for the whole of it.
   audioCodecs: ['aac', 'mp3', 'alac', 'flac'],
@@ -130,8 +132,49 @@ export default function RootLayout() {
               options={{ animation: 'fade', gestureEnabled: false }}
             />
           </Stack>
+          <RootMiniPlayer />
         </View>
       </TowerTheme>
     </SafeAreaProvider>
+  );
+}
+
+/**
+ * The now-playing bar, on every screen that has room for it.
+ *
+ * Named the other way round from how this started, and that is the point. The
+ * bar used to be rendered in exactly two places — the tab bar and the detail
+ * screen — so every screen added afterwards silently went without one. Opening
+ * a shelf dropped the bar mid-song, which is exactly where somebody browsing
+ * for the next track is standing.
+ *
+ * The exclusions are the ones with a real reason. The player is this bar at
+ * full size. Shorts is playing its own sound, so the bar there is always a
+ * paused one squeezing a full-bleed clip to say nothing. Connect and the splash
+ * happen before there is a session to have a song in. Tab screens are excluded
+ * because their own tab bar already draws one directly above itself, where it
+ * belongs; here it would land below the tabs.
+ *
+ * It draws nothing when no track is loaded, so for anyone who never opens an
+ * MP3 the app is exactly as it was.
+ */
+function RootMiniPlayer() {
+  const pathname = usePathname();
+  const segments = useSegments();
+
+  const inTabs = segments[0] === '(tabs)';
+  const ownsTheWholeSurface =
+    pathname === '/' ||
+    pathname.startsWith('/player') ||
+    pathname.startsWith('/shorts') ||
+    pathname.startsWith('/connect');
+
+  if (inTabs || ownsTheWholeSurface) return null;
+
+  return (
+    <MiniPlayer
+      withNavigationPadding
+      onExpand={(titleId) => router.push({ pathname: '/player/[titleId]', params: { titleId } })}
+    />
   );
 }

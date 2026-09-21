@@ -363,7 +363,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   noMetadata: {
-    width: '100%',
     borderRadius: Radius.Card,
     borderWidth: 1,
     borderColor: Hairline,

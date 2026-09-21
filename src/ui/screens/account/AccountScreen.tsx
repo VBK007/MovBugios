@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Pressable,
@@ -118,7 +119,7 @@ export function AccountScreen({
         // the feature, and the remedy is on the server.
         setHistory(empty(UNSUPPORTED));
       } else {
-        setHistory(offline(e instanceof Error ? e.message : GENERIC_FAILURE));
+        setHistory(offline(failureCopy(e)));
       }
     } finally {
       if (alive.current) setRefreshing(false);

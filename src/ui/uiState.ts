@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import { TowerAuthError, TowerHttpError } from '@/data/remote/errors';
 /**
  * The four states every screen in Tower has to be able to draw.
@@ -73,8 +74,8 @@ export async function loadState<T>(
     return emptyWhen?.(value) ? empty(emptyMessage) : loaded(value);
   } catch (error) {
     if (error instanceof ServerAsleepError) return Asleep;
-    const message = error instanceof Error ? error.message : null;
-    return offline(message ?? 'We cannot reach the server.', statusLine(error));
+    // The app's words, not the server's. See `failureCopy`.
+    return offline(failureCopy(error), statusLine(error));
   }
 }
 

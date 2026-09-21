@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Title } from '@/domain/model/media';
@@ -241,6 +242,5 @@ async function homeMusicShelf(
 /** A dead connection means asleep; anything else is reported as offline. */
 function failureState(cause: unknown): UiState<HomeContent> {
   if (cause instanceof ServerAsleepError) return { type: 'ASLEEP' };
-  const message = cause instanceof Error ? cause.message : null;
-  return offline(message ?? 'We cannot reach the server.');
+  return offline(failureCopy(cause));
 }

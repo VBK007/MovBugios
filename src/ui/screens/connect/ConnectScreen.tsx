@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import React, { useCallback, useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -78,7 +79,7 @@ export function ConnectScreen({ onDone }: { onDone: () => void }) {
       setServerName('Tower');
       setStep('SIGN_IN');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'We could not reach that address.');
+      setError(failureCopy(e));
     } finally {
       setBusy(false);
     }
@@ -93,7 +94,7 @@ export function ConnectScreen({ onDone }: { onDone: () => void }) {
       ServiceLocator.useRemote();
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'That did not work.');
+      setError(failureCopy(e));
     } finally {
       setBusy(false);
     }
@@ -117,7 +118,7 @@ export function ConnectScreen({ onDone }: { onDone: () => void }) {
       ServiceLocator.useRemote();
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Google sign-in did not complete.');
+      setError('Google sign-in did not complete.');
     } finally {
       setBusy(false);
     }

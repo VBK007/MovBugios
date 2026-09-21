@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -183,7 +184,7 @@ export function AdminScreen({
             : await remote.backfillArtwork();
         if (alive.current) setActionResult(message ?? 'Done.');
       } catch (e) {
-        if (alive.current) setActionResult(e instanceof Error ? e.message : 'That did not work.');
+        if (alive.current) setActionResult(failureCopy(e));
       } finally {
         if (alive.current) setRunningAction(null);
       }
@@ -256,7 +257,7 @@ export function AdminScreen({
                 await remote.rescanLibrary();
                 setActionResult('Rescan started.');
               } catch (e) {
-                setActionResult(e instanceof Error ? e.message : 'That did not work.');
+                setActionResult(failureCopy(e));
               } finally {
                 if (alive.current) setRescanning(false);
               }

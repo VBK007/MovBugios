@@ -3,7 +3,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import { Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 
-import { Amber, OnInkFaint, Radius, TowerType } from '@/theme';
+import { Amber, Ink, OnInkFaint, Radius, TowerType } from '@/theme';
+import { PlayGlyph } from '@/ui/components/Glyphs';
 import { formatBytes } from '@/domain/model/library';
 import { Title, resolution } from '@/domain/model/media';
 import { gradientFor } from '@/ui/color';
@@ -28,6 +29,8 @@ export function PosterCard({
   meta,
   /** Two for a sentence, one for a measurement. See `DataMeta`. */
   metaMaxLines = 1,
+  /** Play this track, for music. Falls back to opening it. */
+  onPlay,
   style,
 }: {
   title: Title;
@@ -36,10 +39,12 @@ export function PosterCard({
   showUnwatchedDot?: boolean;
   meta?: string | null;
   metaMaxLines?: number;
+  onPlay?: () => void;
   style?: StyleProp<ViewStyle>;
 }) {
   const [from, to] = gradientFor(title.name);
   const unavailable = title.missing;
+  const isMusic = title.kind === 'MUSIC';
   const line = meta ?? defaultMeta(title);
 
   return (
@@ -91,9 +96,37 @@ export function PosterCard({
           style={StyleSheet.absoluteFill}
         />
 
-        <Text style={styles.title} numberOfLines={2} ellipsizeMode="tail">
+        <Text
+          style={[styles.title, isMusic ? styles.titleClearOfBadge : null]}
+          numberOfLines={2}
+          ellipsizeMode="tail"
+        >
           {title.name}
         </Text>
+
+        {/*
+         * What tells a song apart from a film.
+         *
+         * Both arrive as 2:3 posters with a name over a gradient, so on a mixed
+         * shelf an MP3 and a feature were indistinguishable until you opened
+         * one — and opening one is how you found out, because a song has a
+         * detail page that is mostly empty.
+         *
+         * A play button rather than a note icon or a badge reading "MUSIC",
+         * because it does the obvious thing as well as saying it: from a shelf,
+         * a song is something you start, where a film is something you read
+         * about first. Amber, as everything you can act on is.
+         */}
+        {isMusic && !unavailable && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Play ${title.name}`}
+            onPress={onPlay ?? onPress}
+            style={styles.playBadge}
+          >
+            <PlayGlyph color={Ink} size={12} />
+          </Pressable>
+        )}
 
         {showUnwatchedDot && title.watchState === 'UNWATCHED' && !unavailable && (
           <View style={styles.unwatchedDot} />
@@ -227,5 +260,23 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 3.5,
     backgroundColor: Amber,
+  },
+  playBadge: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Amber,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // A triangle's visual centre sits left of its bounding box, so centring it
+    // by the maths reads as leaning back into the circle.
+    paddingLeft: 2,
+  },
+  /** Keeps a two-line song title from running under the badge. */
+  titleClearOfBadge: {
+    right: 40,
   },
 });

@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { RemoteTowerRepository } from '@/data/remote/remoteTowerRepository';
@@ -136,7 +137,7 @@ export function useComments(
       });
       if (!editing) onCountChanged(1);
     } catch (e) {
-      patch({ posting: false, error: e instanceof Error ? e.message : POST_FAILED });
+      patch({ posting: false, error: failureCopy(e) });
     }
   }, [remote, state.draft, state.editing, titleId, onCountChanged, patch]);
 
@@ -160,7 +161,7 @@ export function useComments(
       } catch (e) {
         patch({
           comments: loaded(before),
-          error: e instanceof Error ? e.message : 'That could not be removed.',
+          error: failureCopy(e),
         });
         onCountChanged(1);
       }

@@ -54,7 +54,6 @@ import { EngagementRow } from '@/ui/components/Engagement';
 import { Teaser } from '@/domain/model/teaser';
 import { PlaybackSource } from '@/domain/model/player';
 import { MusicPlayback } from '@/player/musicPlayback';
-import { MiniPlayer } from '@/ui/components/MiniPlayer';
 import { PlaybackPlanCard } from '@/ui/components/PlaybackPlanCard';
 import { PosterCard } from '@/ui/components/PosterCard';
 import { Skeleton } from '@/ui/components/Rails';
@@ -262,13 +261,14 @@ export function MovieDetailScreen({
       )}
 
       {/*
-       * The bar belongs here too, not only under the tabs: collapsing the full
-       * player usually lands on a detail screen, and a song that vanished from
-       * view the moment it did would look like it had stopped.
+       * The bar used to be drawn here as well as under the tabs, because
+       * collapsing the full player usually lands on a detail screen and a song
+       * that vanished at that moment would look like it had stopped.
+       *
+       * It is drawn at the root now — see RootMiniPlayer in app/_layout.tsx —
+       * which covers this screen and every other one that is not a tab. Two
+       * copies stacked on the same screen was the thing to avoid.
        */}
-      <View style={styles.miniPlayer}>
-        <MiniPlayer onExpand={onOpenPlayer} withNavigationPadding />
-      </View>
 
       {gate.sheet}
 

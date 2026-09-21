@@ -88,8 +88,14 @@ export function toMediaKind(raw?: string | null): MediaKind {
     case 'PHOTO':
     case 'PHOTOS':
       return 'PHOTO';
+    case 'ADULT':
+      return 'ADULT';
     // An unknown type is still a file on the disk, and hiding it would be worse
     // than filing it under Films.
+    //
+    // Note which way this falls: an unrecognised type becomes a film, never
+    // 18+. Guessing a title into that category on a server that sent something
+    // this build does not know would be the one wrong guess to make.
     default:
       return 'FILM';
   }

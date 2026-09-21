@@ -165,7 +165,6 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   banner: {
-    width: '100%',
     borderRadius: Radius.Card,
     borderWidth: 1,
     padding: 14,

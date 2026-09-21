@@ -12,7 +12,7 @@
  * the server assigns this from the library root a file was found under, never by
  * guessing at the filename.
  */
-export type MediaKind = 'FILM' | 'ANIME' | 'HOME_VIDEO' | 'MUSIC' | 'PHOTO';
+export type MediaKind = 'FILM' | 'ANIME' | 'HOME_VIDEO' | 'MUSIC' | 'PHOTO' | 'ADULT';
 
 export const MediaKindLabel: Record<MediaKind, string> = {
   FILM: 'Films',
@@ -21,6 +21,15 @@ export const MediaKindLabel: Record<MediaKind, string> = {
   HOME_VIDEO: 'Ours',
   MUSIC: 'Music',
   PHOTO: 'Photos',
+  /**
+   * Adult video, reached only by asking for it.
+   *
+   * A category rather than a flag, matching the server: the chip, the type and
+   * the owner tool that moves an item between types are then the same three
+   * things they already were. "All" and every home rail leave it out, so it is
+   * somewhere to put a thing *and* somewhere it stays.
+   */
+  ADULT: '18+',
 };
 
 export function isTimelineKind(kind: MediaKind): boolean {

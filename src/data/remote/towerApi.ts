@@ -786,6 +786,34 @@ async function ensureSuccess(response: Response): Promise<void> {
  * version rendered one of those verbatim on the admin screen.
  */
 async function humanDetail(response: Response): Promise<string | null> {
+  // The tunnel, before the server gets a look in.
+  //
+  // ngrok answers in its own right when something is wrong with the *tunnel*
+  // rather than with Tower, and it says so in a header. Worth reading first,
+  // because those replies are HTML pages carrying no `message` field: they fall
+  // through to the status-code sentences below, where a 403 from an exhausted
+  // tunnel reads as "the server refused that request" — a sentence about the
+  // wrong machine.
+  //
+  // Learned the hard way on Android: every endpoint answering 403, the app
+  // reporting the server unreachable and the session apparently lost. The
+  // server was fine. The month's bandwidth was not.
+  const tunnelError = response.headers.get('Ngrok-Error-Code');
+  if (tunnelError) {
+    switch (tunnelError) {
+      case 'ERR_NGROK_725':
+        return (
+          'The tunnel to Tower is out of bandwidth for this month. ' +
+          'Tower itself is fine — top up the tunnel, or connect on home Wi-Fi.'
+        );
+      case 'ERR_NGROK_3200':
+      case 'ERR_NGROK_6022':
+        return 'The tunnel to Tower is not running. Start it on the server.';
+      default:
+        return `The tunnel to Tower refused that request (${tunnelError}).`;
+    }
+  }
+
   try {
     const text = await response.text();
     if (!text) return null;

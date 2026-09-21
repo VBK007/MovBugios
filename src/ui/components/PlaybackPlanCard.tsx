@@ -197,7 +197,6 @@ function describePlan(plan: PlaybackPlan): string {
 
 const styles = StyleSheet.create({
   card: {
-    width: '100%',
     borderRadius: Radius.Card,
     borderWidth: 1,
     padding: 14,

@@ -1,3 +1,4 @@
+import { failureCopy } from '@/ui/failureCopy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
@@ -12,6 +13,7 @@ import {
   ClientCapabilities,
   PlaybackSource,
   Trickplay,
+  needsNewTranscode,
   originSeconds,
 } from '@/domain/model/player';
 import { Loading, UiState, dataOrNull, loadState } from '@/ui/uiState';
@@ -74,6 +76,16 @@ const REPORT_INTERVAL_MS = 3_000;
 
 /** How long a piece of party news stays over the picture. */
 const PARTY_NOTE_MS = 5_000;
+
+/**
+ * How long to leave the server alone after it declines to start a stream.
+ *
+ * Not a throttle on asking — a backoff after being told no. "All transcode
+ * slots are busy" is answered by waiting for one to free, and a member who
+ * instead asks again on the next clock frame is holding the door shut from the
+ * outside: its own requests are what keep the slots occupied.
+ */
+const SOURCE_RETRY_DELAY_MS = 10_000;
 
 /**
  * What this device needs to know about the party it is watching with.
@@ -262,31 +274,13 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const lastReportedSecond = useRef(0);
   const scrubbingRef = useRef(scrubbing);
   scrubbingRef.current = scrubbing;
-/**
-   * Codecs this device has *proved* it cannot show the picture of.
-   *
-   * There is no way to say this in advance. The capabilities carry codec names
-   * and nothing else — no profile, no bit depth, nothing about how the stream is
-   * tagged inside its container — so two HEVC files that behave completely
-   * differently on this phone are the same word to the server, and it sends both
-   * untouched. One of them plays its sound and none of its picture.
-   *
-   * So the claim is withdrawn after the fact. A named codec rather than a blanket
-   * "convert everything", because `videoCodecs` minus one entry is an ordinary
-   * sentence any server already understands, where an empty list is an edge case
-   * each one may read differently. Dropping `hevc` leaves `h264`, which is the
-   * thing every phone plays.
-   *
-   * Per playback, and per codec. The next file is asked for normally.
-   */
-  const [refusedVideoCodecs, setRefusedVideoCodecs] = useState<string[]>([]);
+
   const stateRef = useRef({
     source,
     maxHeight,
     subtitleTrack,
     audioTrack,
     durationSeconds,
-    refusedVideoCodecs,
   });
   stateRef.current = {
     source,
@@ -294,8 +288,13 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
     subtitleTrack,
     audioTrack,
     durationSeconds,
-    refusedVideoCodecs,
   };
+
+  /** Whether a playback decision is on its way back. */
+  const sourceInFlight = useRef(false);
+
+  /** When the server last declined to start one. Zero means it never has. */
+  const sourceRefusedAt = useRef(0);
   /**
    * What the party callbacks read.
    *
@@ -308,6 +307,9 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
     playing,
     actuallyPlaying,
     plan: null as PlaybackPlan | null,
+    // The stream itself, not just its plan: catching up needs to know where the
+    // running transcode *starts* to tell a seek from a re-encode.
+    source: null as PlaybackSource | null,
   });
 
   /** True when in a party but not running it. */
@@ -353,10 +355,21 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const deviceCapabilities = useCallback(
     (): ClientCapabilities => ({
       deviceName: 'iPhone',
-      // Minus whatever this file has already failed to show a picture of.
-      videoCodecs: ['h264', 'hevc'].filter(
-        (codec) => !stateRef.current.refusedVideoCodecs.includes(codec),
-      ),
+      /*
+       * H.264 only. HEVC is deliberately not claimed, and this is the evidence
+       * rather than caution: a direct-played MP4/HEVC file on this phone plays
+       * its sound and shows no picture at all — no error, no refusal, just an
+       * item that loads and a black screen. The codec name is the same word for
+       * the HEVC this device plays and the HEVC it cannot, and the capabilities
+       * have no second word to tell them apart, so the only honest claim is the
+       * one that always works.
+       *
+       * The cost is real and worth stating: every HEVC file is now converted by
+       * the server rather than sent as it is, which is work it did not do before
+       * and bandwidth it cannot save. That is the trade for those files playing.
+       *
+       */
+      videoCodecs: ['h264'],
       /*
        * No `ac3` or `eac3`, which is the whole of a bug worth remembering.
        *
@@ -391,6 +404,7 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
    */
   const requestSource = useCallback(
     async (startSeconds: number) => {
+      sourceInFlight.current = true;
       try {
         // Returns immediately once settled, which after the first decision
         // it always is.
@@ -405,10 +419,50 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
         setSourceError(null);
       } catch (e) {
         if (!alive.current) return;
-        setSourceError(e instanceof Error ? e.message : 'The server could not start this file.');
+        sourceRefusedAt.current = Date.now();
+        // Only a failure if it leaves the viewer with nothing. Once a stream is
+        // running, a refused request for a different one changes nothing they
+        // can see — and "this will not play" written over a playing picture is
+        // worse than saying nothing.
+        if (stateRef.current.source == null) setSourceError(failureCopy(e));
+      } finally {
+        sourceInFlight.current = false;
       }
     },
     [repository, titleId, deviceCapabilities],
+  );
+
+  /**
+   * The same request, for a party member catching up — the one caller that asks
+   * over and over.
+   *
+   * Two things stop it, and both were missing:
+   *
+   *  - One at a time. A decision takes seconds to come back and the party's
+   *    clock arrives every two, so a member with nothing playing yet fires a
+   *    request per frame while the first is still travelling.
+   *
+   *  - Not straight after a refusal. The server has two transcode slots; when
+   *    they are full it answers 429 and no stream arrives, which leaves this
+   *    device with no source — and "no source" is exactly the condition that
+   *    makes the next frame ask again. That loop is self-feeding: the requests
+   *    are what keep the slots busy, so it never recovers on its own.
+   *
+   * This matters more here than on Android. Every HEVC file is transcoded for
+   * this phone by design (see `deviceCapabilities`), so iOS is the device most
+   * likely to need a slot — and was the one with no protection against
+   * exhausting them.
+   *
+   * A deliberate seek by the user still goes straight to `requestSource`. It
+   * happens once, because a person pressed something.
+   */
+  const requestSourceForParty = useCallback(
+    (startSeconds: number) => {
+      if (sourceInFlight.current) return;
+      if (Date.now() - sourceRefusedAt.current < SOURCE_RETRY_DELAY_MS) return;
+      void requestSource(startSeconds);
+    },
+    [requestSource],
   );
 
   /**
@@ -489,7 +543,7 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
   const plan: PlaybackPlan =
     source?.plan ?? dataOrNull(content)?.title.plan ?? { type: 'UNKNOWN', reasons: [] };
 
-  partyStateRef.current = { party, positionSeconds, playing, actuallyPlaying, plan };
+  partyStateRef.current = { party, positionSeconds, playing, actuallyPlaying, plan, source };
 
   /**
    * Position reported by the real player, in seconds of *its own* stream.
@@ -800,8 +854,11 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
           setPositionSeconds(aim);
           setSpeed(1);
           expectSeek(aim, PARTY_SEEK_SETTLED_SECONDS, true);
-          if (current.plan?.type === 'TRANSCODE') void requestSource(aim);
-          else setSeekRequest(requestSeek(aim));
+          if (current.plan?.type === 'TRANSCODE' && needsNewTranscode(aim, current.source)) {
+            requestSourceForParty(aim);
+          } else {
+            setSeekRequest(requestSeek(aim));
+          }
           return;
         }
       }
@@ -815,11 +872,14 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
         expectSeek(aim, PARTY_SEEK_SETTLED_SECONDS, true);
 
         // A transcode holds only the part of the file after its start offset, so
-        // a jump outside it has to be re-encoded from the new point rather than
-        // seeked locally — and asking the current stream to seek as well would
-        // move it somewhere meaningless before the new one replaces it.
-        if (current.plan?.type === 'TRANSCODE') {
-          void requestSource(aim);
+        // a jump to somewhere *before* it has to be re-encoded from the new
+        // point rather than seeked locally — and asking the current stream to
+        // seek as well would move it somewhere meaningless before the new one
+        // replaces it. Everything after that offset is already in the stream
+        // arriving now, and a seek reaches it without costing the server an
+        // encode it cannot spare. See `needsNewTranscode`.
+        if (current.plan?.type === 'TRANSCODE' && needsNewTranscode(aim, current.source)) {
+          requestSourceForParty(aim);
         } else {
           setSeekRequest(requestSeek(aim));
         }
@@ -827,7 +887,7 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
         setSpeed(correction.speed);
       }
     },
-    [requestSeek, expectSeek, requestSource],
+    [requestSeek, expectSeek, requestSourceForParty],
   );
 
   /**
@@ -1226,30 +1286,6 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
     if (alive.current) setParty(null);
   }, [remote]);
 
-  /**
-   * Asks for the same film again, without the codec that gave no picture.
-   *
-   * Done rather than offered. The first version put a button here, and that was
-   * wrong: nothing about how a file is tagged inside its container is something
-   * a person should have to know, and a button reading "Convert it" asks them to
-   * diagnose a codec. It resumes where they were, so the cost is a few seconds
-   * of buffering and a line saying what happened.
-   *
-   * Returns false when this codec has already been refused, which is what keeps
-   * a file the server cannot fix from looping.
-   */
-  const refuseVideoCodec = useCallback(
-    (codec: string): boolean => {
-      const named = codec.trim().toLowerCase();
-      if (named === '' || stateRef.current.refusedVideoCodecs.includes(named)) return false;
-      const next = [...stateRef.current.refusedVideoCodecs, named];
-      stateRef.current.refusedVideoCodecs = next;
-      setRefusedVideoCodecs(next);
-      void requestSource(positionSeconds);
-      return true;
-    },
-    [positionSeconds, requestSource],
-  );
 
   return {
     content,
@@ -1264,8 +1300,6 @@ export function usePlayer(titleId: string, partyCode: string | null = null) {
      * after — a dead next button and no auto-advance.
      */
     musicTracks,
-    refusedVideoCodecs,
-    refuseVideoCodec,
     partyMovedTo,
     clearPartyMoved: () => setPartyMovedTo(null),
     setMembersOpen,

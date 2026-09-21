@@ -169,9 +169,9 @@ class MusicPlaybackController {
     } catch (error) {
       // Said out loud rather than swallowed. Without this the screen sits on a
       // sleeve that never plays and gives no reason at all.
-      this.unavailable.set(
-        error instanceof Error ? error.message : 'This build cannot play music.',
-      );
+      // The platform's own wording is no more use on screen than a server's.
+      void error;
+      this.unavailable.set('This build cannot play music.');
       return;
     }
     this.unavailable.set(null);

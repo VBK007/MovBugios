@@ -32,8 +32,23 @@ import { playMusicFrom } from '@/player/playMusic';
 import { PosterCard } from '@/ui/components/PosterCard';
 import { PosterSkeleton } from '@/ui/components/Rails';
 
-/** The category chips, in board order. `null` is "All". */
-const LibraryCategories: (MediaKind | null)[] = [null, 'FILM', 'ANIME', 'HOME_VIDEO', 'MUSIC'];
+/**
+ * The category chips, in board order. `null` is "All".
+ *
+ * `18+` sits last, after everything a household browses together. It is also
+ * the only chip whose contents are not in "All" — the server leaves that type
+ * out of an unnarrowed listing and out of every home rail, so this chip is the
+ * only way to reach it. That is the point of the category rather than a side
+ * effect: somewhere to put a thing, and somewhere it stays.
+ */
+const LibraryCategories: (MediaKind | null)[] = [
+  null,
+  'FILM',
+  'ANIME',
+  'HOME_VIDEO',
+  'MUSIC',
+  'ADULT',
+];
 
 /**
  * The shelf. A three-column grid of everything on the disk, filtered by chips.

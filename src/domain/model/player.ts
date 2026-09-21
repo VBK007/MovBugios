@@ -122,6 +122,39 @@ export function originSeconds(source: PlaybackSource): number {
 }
 
 /**
+ * How far before a transcode's start offset still counts as inside it.
+ *
+ * ffmpeg begins at the keyframe at or before the offset it was given, so the
+ * stream can genuinely start a few seconds earlier than the number it was asked
+ * for. Treating that margin as missing would order a new encode of footage
+ * already on its way.
+ */
+const TRANSCODE_ORIGIN_TOLERANCE_SECONDS = 10;
+
+/**
+ * Whether reaching `target` needs the server to transcode again, or just a seek.
+ *
+ * A transcode runs from its start offset to the end of the file, so everything
+ * after that offset is already in the stream being delivered — reachable by
+ * seeking, at no cost to anybody. Only a target *before* it is genuinely
+ * missing, and only that is worth asking the server to encode the file again
+ * from somewhere else.
+ *
+ * This matters most to a party member catching up, which is the one case that
+ * asks repeatedly. A member is always *behind* the party, so every correction
+ * sends them forward — into footage the running transcode is already sending.
+ * Answering each of those with a fresh encode exhausts the server's two slots
+ * before any of them produces a frame, and the member sits on "Opening…" for as
+ * long as it keeps trying.
+ *
+ * No source means there is no stream yet, which needs one.
+ */
+export function needsNewTranscode(target: number, source: PlaybackSource | null | undefined): boolean {
+  if (source == null) return true;
+  return target < originSeconds(source) - TRANSCODE_ORIGIN_TOLERANCE_SECONDS;
+}
+
+/**
  * What this device can actually decode. Sent to the server before playback so it
  * can decide direct-play vs transcode — the server cannot infer any of it, and a
  * field left null is treated as "unknown", which biases toward transcoding rather
