@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { PreferencesStore } from '@/data/remote/preferencesStore';
 import { RecentArt } from '@/data/remote/recentArt';
+import { currentBaseUrl } from '@/data/remote/serverDirectory';
 import { UiSettings } from '@/data/uiSettings';
 import { DEFAULT_BASE_URL, ServiceLocator } from '@/di/serviceLocator';
 import { OnboardingScreen } from '@/ui/screens/onboarding/OnboardingScreen';
@@ -77,24 +78,35 @@ export default function Index() {
       } catch {
         restored = false;
       }
-      /*
-       * Signed in, or merely knowing where the server is, both land on the real
-       * catalogue. `restoreSession` sets the address even when it finds no token,
-       * so a visitor is usually in the second case: an address from the store, or
-       * from the directory, or baked into this build.
-       *
-       * The sample library is the last resort, for the one case where no address
-       * is known at all — which is a fresh install of a build with no default,
-       * before anybody has typed one. Everything else browses the house.
-       */
-      const address = ServiceLocator.session.baseUrl.get() ?? DEFAULT_BASE_URL;
       if (restored) {
-        ServiceLocator.useRemote();
-      } else if (address !== '' && address != null) {
-        ServiceLocator.session.setBaseUrl(address);
+        // Signed in: use the address and token `restoreSession` already put in
+        // the session. It re-resolves through the directory by itself when the
+        // address it had has stopped answering.
         ServiceLocator.useRemote();
       } else {
-        ServiceLocator.useSampleData();
+        /*
+         * Not signed in — ask the directory where the server *currently* is,
+         * rather than trusting whatever address is stored.
+         *
+         * The stored one is the likeliest thing to be dead: a free tunnel gets a
+         * new hostname every time its container restarts. And a visitor has no
+         * token, so `restoreSession` returns before it reaches its own "that
+         * address stopped answering, ask where the server moved" branch — which
+         * left a guest holding a rotated tunnel with nothing able to correct it.
+         *
+         * `currentBaseUrl` falls back to the last address this device saw, so a
+         * launch with no network is not stranded either. The build's baked-in
+         * default is below that, and the sample library below everything: the
+         * one case where no address is known at all.
+         */
+        const address =
+          (await currentBaseUrl()) ?? ServiceLocator.session.baseUrl.get() ?? DEFAULT_BASE_URL;
+        if (address != null && address !== '') {
+          ServiceLocator.session.setBaseUrl(address);
+          ServiceLocator.useRemote();
+        } else {
+          ServiceLocator.useSampleData();
+        }
       }
 
       let asked = true;

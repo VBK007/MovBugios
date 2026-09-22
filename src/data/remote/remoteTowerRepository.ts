@@ -318,13 +318,17 @@ export class RemoteTowerRepository implements TowerRepository {
 
   /** Restores a session saved by a previous run. Returns true if one was found. */
   async restoreSession(): Promise<boolean> {
-    // The stored address first: somebody who typed one has said something more
-    // specific than any lookup can.
-    let baseUrl = await CredentialStore.read(CredentialKeys.baseUrl);
-
-    // Nothing stored — ask where the server is. This is how a fresh install
-    // with no baked-in address finds the house without being told.
-    if (!baseUrl) baseUrl = await this.adoptPublishedAddress();
+    /*
+     * The stored address, and only that: somebody who typed one has said
+     * something more specific than any lookup can.
+     *
+     * No directory lookup here when nothing is stored. There used to be one, and
+     * it made a fresh install pay for two — this one, and the one the launch
+     * does for a visitor. Nothing is stored means nobody is signed in either, so
+     * returning false hands the question to `currentBaseUrl`, which is where
+     * finding the house now lives.
+     */
+    const baseUrl = await CredentialStore.read(CredentialKeys.baseUrl);
     if (!baseUrl) return false;
     this.session.setBaseUrl(baseUrl);
 
@@ -395,8 +399,15 @@ export class RemoteTowerRepository implements TowerRepository {
    */
   async signOut(): Promise<void> {
     this.session.clear();
-    for (const key of Object.values(CredentialKeys)) {
-      if (key === CredentialKeys.baseUrl) continue;
+    // Named rather than "everything except the address", so a key added later
+    // is kept by default. Getting that wrong the other way silently throws away
+    // something nobody meant to clear.
+    for (const key of [
+      CredentialKeys.token,
+      CredentialKeys.refreshToken,
+      CredentialKeys.profileId,
+      CredentialKeys.adminKey,
+    ]) {
       await CredentialStore.write(key, null);
     }
     await RecentArt.clear();

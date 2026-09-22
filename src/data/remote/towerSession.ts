@@ -70,6 +70,14 @@ export function normaliseBaseUrl(raw: string): string {
 /** Keys under which the session is persisted. Ported from `CredentialStore`. */
 export const CredentialKeys = {
   baseUrl: 'tower.baseUrl',
+  /**
+   * The last address Firestore gave, for a launch that cannot reach Firestore.
+   *
+   * Kept apart from `baseUrl` because they answer different questions: that one
+   * is where the app is pointed, which somebody may have typed by hand, and this
+   * is the last thing the directory said, which is only ever a fallback.
+   */
+  discoveredBaseUrl: 'tower.discoveredBaseUrl',
   token: 'tower.token',
   profileId: 'tower.profileId',
   /**

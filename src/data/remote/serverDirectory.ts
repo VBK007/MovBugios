@@ -1,4 +1,6 @@
 import { firebaseConfig } from '@/auth/firebaseConfig';
+import { CredentialStore } from '@/data/remote/credentialStore';
+import { CredentialKeys } from '@/data/remote/towerSession';
 
 /**
  * Where Tower says it can be found today.
@@ -45,6 +47,72 @@ const DATABASE_ID = 'codeplays-manage17498';
 
 /** Collection and document. Every device has to look in the same place. */
 const DOCUMENT_PATH = 'config/server';
+
+/**
+ * Long enough for a cold connection, short enough not to strand the splash.
+ *
+ * Four seconds was the first guess and it was wrong on the device it mattered
+ * on: a first request to `firestore.googleapis.com` over mobile data has DNS, a
+ * TLS handshake and a round trip to do, and it timed out every launch — which
+ * read, before the failure was named, as simply being unable to reach Firestore.
+ *
+ * Only paid by a signed-out launch. A restored session never comes here.
+ */
+const LOOKUP_TIMEOUT_MS = 12_000;
+
+/**
+ * The address to connect to as a visitor: freshly looked up when reachable, the
+ * last one this device saw when not, in that order.
+ *
+ * Fresh first, and that is the point rather than an inefficiency. A visitor has
+ * no token, so `restoreSession` returns before it ever gets to the "that address
+ * stopped answering, ask where the server moved" branch — which left a guest
+ * holding whichever tunnel was stored, forever, with nothing able to correct it.
+ * That address is precisely the one most likely to be dead: a free tunnel gets a
+ * new hostname every time its container restarts.
+ *
+ * The cache matters more than it looks. A launch with no network, or one that
+ * cannot reach Firestore, is exactly the launch where being stranded is least
+ * recoverable — so the last known-good address is kept and used rather than
+ * falling through to a build-time constant the tunnel has almost certainly
+ * outlived.
+ */
+export async function currentBaseUrl(): Promise<string | null> {
+  const looked = await withTimeout(lookupPublishedBaseUrl(), LOOKUP_TIMEOUT_MS);
+
+  if (looked != null && looked.trim() !== '') {
+    try {
+      await CredentialStore.write(CredentialKeys.discoveredBaseUrl, looked);
+      /*
+       * And as *the* remembered address, not only as this lookup's cache.
+       * Everything else that asks "where is the server" reads the main key —
+       * `restoreSession` on the next launch, and the connect screen deciding
+       * whether it still needs to ask. While this only wrote its own key, those
+       * kept finding the tunnel that had rotated away, and pressing Sign in led
+       * to the address step for a server the app was already browsing.
+       */
+      await CredentialStore.write(CredentialKeys.baseUrl, looked);
+    } catch {
+      // A store that will not take it does not make the address less true.
+    }
+    return looked;
+  }
+
+  try {
+    const cached = await CredentialStore.read(CredentialKeys.discoveredBaseUrl);
+    return cached != null && cached.trim() !== '' ? cached : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves to null rather than hanging the splash on a request that never lands. */
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    work.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
 
 /**
  * The published address, or null if there is not a usable one.
