@@ -31,6 +31,7 @@ import {
   MediaSettingsDto,
 } from '@/data/remote/dto';
 import { TowerAuthError, TowerHttpError, TowerNotPairedError } from '@/data/remote/errors';
+import { lookupPublishedBaseUrl } from '@/data/remote/serverDirectory';
 import { TowerSession } from '@/data/remote/towerSession';
 
 /**
@@ -54,6 +55,17 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * would abandon an answer that was still coming.
  */
 const ASSISTANT_TIMEOUT_MS = 90_000;
+
+/**
+ * How long a failed directory lookup stands before another is worth making.
+ *
+ * A screen fires half a dozen requests at once and they fail together, so the
+ * first one asks and the rest take its answer. Beyond that, a server that is
+ * genuinely down should not cost a round trip to Firestore per failed request —
+ * but somebody who has just restarted the tunnel and pulled to refresh should
+ * not be made to wait either, which is what puts this at half a minute.
+ */
+const ADDRESS_LOOKUP_COOLDOWN_MS = 30_000;
 
 /**
  * The only place in the app that knows the server speaks HTTP.
@@ -116,21 +128,23 @@ export class TowerApi {
   }
 
   /**
-   * One request, with a single 401 retry against a freshly minted access token.
+   * One request, with two recoveries: a fresh access token, and a fresh address.
    *
-   * At the send layer rather than in each call site: a token expires mid-session,
-   * and forty-odd endpoints should not each have to know how to recover from it.
+   * At the send layer rather than in each call site, for the same reason in both
+   * cases — a token expires mid-session and a tunnel moves mid-session, and
+   * forty-odd endpoints should not each have to know how to recover from either.
    */
   private async send(
     path: string,
     init: RequestInit & { admin?: boolean; timeoutMs?: number } = {},
   ): Promise<Response> {
     const { admin, timeoutMs, ...rest } = init;
-    const url = this.url(path);
 
+    // Read per attempt, not once: the whole point of the recovery below is that
+    // the address can change between the first try and the second.
     const attempt = (extra?: Record<string, string>) =>
       fetchWithTimeout(
-        url,
+        this.url(path),
         {
           ...rest,
           headers: { ...this.authHeaders(admin), ...(rest.headers as object), ...extra },
@@ -139,7 +153,48 @@ export class TowerApi {
       );
 
     const sentToken = this.session.token.get();
-    let response = await attempt();
+
+    let response: Response;
+    try {
+      response = await attempt();
+    } catch (error) {
+      /*
+       * Nothing answered. That is what a tunnel that has moved looks like from
+       * here — DNS that no longer resolves, a refused connection, a timeout —
+       * and it is indistinguishable from a server that is genuinely down.
+       *
+       * So ask the directory where the server is now. A free tunnel gets a new
+       * hostname every time its container restarts, and until this existed the
+       * only thing that ever re-read the directory was a launch: the address
+       * went stale while the app was open and stayed stale, with every screen
+       * reporting an unreachable server and offering to wake a machine that was
+       * already awake.
+       *
+       * Only on a throw, never on a status. A server that answers 500 is a
+       * server that was found, and looking for it somewhere else would be the
+       * wrong remedy for the wrong problem.
+       */
+      if (!(await this.moveToPublishedAddress())) throw error;
+      response = await attempt();
+    }
+
+    /*
+     * Something answered, but it was not Tower.
+     *
+     * This is the other half of a tunnel that has moved, and the half that is
+     * easy to miss: a free ngrok hostname that no longer forwards anywhere does
+     * not stop resolving. The edge is still there and still answers — with its
+     * own HTML error page, 403, before anything is routed. Nothing throws, so
+     * the recovery above never fires, and every request in the app failed
+     * against an address that looked alive.
+     *
+     * HTML on an API path is the tell. Tower answers JSON on every route under
+     * `/api`, including its errors, so a page meant for a browser did not come
+     * from Tower — it came from whatever is standing where Tower used to be.
+     */
+    if (!response.ok && isTunnelErrorPage(response) && (await this.moveToPublishedAddress())) {
+      response = await attempt();
+    }
 
     // The auth endpoints answer 401 to mean "these credentials are wrong", which
     // no amount of refreshing fixes.
@@ -152,6 +207,64 @@ export class TowerApi {
     }
     return response;
   }
+
+  /**
+   * Asks the directory where the server moved to, and adopts the answer.
+   *
+   * False — meaning "do not bother retrying" — when there is nothing new to try:
+   * no directory, no answer, or the same address that just failed.
+   *
+   * Serialised and rate-limited, because a screen makes six requests at once and
+   * all six fail together. Without this, one dead tunnel would mean six
+   * simultaneous lookups, six writes, and six retries of the same discovery.
+   */
+  private addressLookup: Promise<boolean> | null = null;
+  private addressLookupAt = 0;
+
+  private moveToPublishedAddress(): Promise<boolean> {
+    if (this.addressLookup != null) return this.addressLookup;
+
+    /*
+     * A cooldown, so a server that really is down does not turn every failed
+     * request into a round trip to Firestore. Long enough that a burst of
+     * failures asks once; short enough that somebody who restarts the tunnel and
+     * pulls to refresh is not told to wait.
+     */
+    if (Date.now() - this.addressLookupAt < ADDRESS_LOOKUP_COOLDOWN_MS) {
+      return Promise.resolve(false);
+    }
+
+    this.addressLookup = (async () => {
+      this.addressLookupAt = Date.now();
+      const previous = this.session.baseUrl.get();
+      const published = await lookupPublishedBaseUrl();
+      if (published == null || published === previous) return false;
+
+      this.session.setBaseUrl(published);
+      // Persisted through the repository, which owns where the session is kept —
+      // the same division as `onTokensRenewed`.
+      try {
+        await this.onAddressMoved?.(published);
+      } catch {
+        // An address that cannot be written down is still the right address for
+        // this run.
+      }
+      return true;
+    })().finally(() => {
+      this.addressLookup = null;
+    });
+
+    return this.addressLookup;
+  }
+
+  /**
+   * Called with an address the directory published, so it can be remembered.
+   *
+   * A callback rather than a store write here, for the same reason as
+   * `onTokensRenewed`: the transport should not have to know where the session
+   * is kept.
+   */
+  onAddressMoved: ((baseUrl: string) => Promise<void>) | null = null;
 
   /**
    * Mints a new access token, one caller at a time.
@@ -876,6 +989,17 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Whether a failed response came from a tunnel rather than from Tower.
+ *
+ * Only the content type, and deliberately: the body is what the caller is about
+ * to read, and reading it here to sniff it would consume the stream.
+ */
+function isTunnelErrorPage(response: Response): boolean {
+  const type = response.headers.get('content-type') ?? '';
+  return type.includes('text/html');
 }
 
 function query(params?: Record<string, unknown>): string {

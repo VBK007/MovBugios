@@ -157,6 +157,20 @@ export class RemoteTowerRepository implements TowerRepository {
     private readonly session: TowerSession,
   ) {
     this.api.onTokensRenewed = (auth) => this.storeTokens(auth);
+    /*
+     * The transport found the server somewhere else. Remembered here, so the
+     * next launch starts at the new address instead of rediscovering it — and so
+     * the connect screen offers the address that is actually working.
+     *
+     * The server is reachable again by definition when this fires, so the state
+     * is corrected too: whatever screen reported it asleep was right about the
+     * old address and wrong about the server.
+     */
+    this.api.onAddressMoved = async (baseUrl) => {
+      await CredentialStore.write(CredentialKeys.baseUrl, baseUrl);
+      await CredentialStore.write(CredentialKeys.discoveredBaseUrl, baseUrl);
+      this._serverState.set(online());
+    };
   }
 
   get serverState(): Flow<ServerState> {
